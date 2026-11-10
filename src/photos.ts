@@ -195,106 +195,55 @@ export async function extractRegion(p: PhotoItem, sx: number, sy: number, sw: nu
 
 type Painter = (x: CanvasRenderingContext2D, w: number, h: number) => void;
 
+// サンプルは単色のカラーパレット。図形は構図に沿った最小限のものだけ置く
+const flat = (bg: string, draw?: (x: CanvasRenderingContext2D, w: number, h: number) => void): Painter => (x, w, h) => {
+  x.fillStyle = bg;
+  x.fillRect(0, 0, w, h);
+  draw?.(x, w, h);
+};
+const disc = (fill: string, cx: number, cy: number, r: number) => (x: CanvasRenderingContext2D, w: number, h: number) => {
+  x.fillStyle = fill;
+  x.beginPath();
+  x.arc(w * cx, h * cy, Math.min(w, h) * r, 0, Math.PI * 2);
+  x.fill();
+};
 const SAMPLES: { name: string; w: number; h: number; paint: Painter }[] = [
+  { name: '日の丸', w: 1200, h: 1200, paint: flat('#e8792b', disc('#f6e9d7', 0.5, 0.5, 0.2)) },
   {
-    name: '夕日（日の丸）',
-    w: 1200,
-    h: 1200,
-    paint(x, w, h) {
-      const g = x.createLinearGradient(0, 0, 0, h);
-      g.addColorStop(0, '#f6b26b');
-      g.addColorStop(1, '#e8792b');
-      x.fillStyle = g;
-      x.fillRect(0, 0, w, h);
-      x.fillStyle = '#fff4d6';
-      x.beginPath();
-      x.arc(w / 2, h / 2, w * 0.16, 0, Math.PI * 2);
-      x.fill();
-    },
-  },
-  {
-    name: '海と空（水平線）',
+    name: '水平線',
     w: 1500,
     h: 1000,
-    paint(x, w, h) {
-      const sky = x.createLinearGradient(0, 0, 0, h * 0.62);
-      sky.addColorStop(0, '#9ec9e8');
-      sky.addColorStop(1, '#dcecf5');
-      x.fillStyle = sky;
-      x.fillRect(0, 0, w, h);
-      x.fillStyle = '#2f6f95';
-      x.fillRect(0, h * 0.64, w, h);
-    },
+    paint: flat('#efe7da', (x, w, h) => {
+      x.fillStyle = '#3d5a80';
+      x.fillRect(0, h * 0.62, w, h);
+    }),
   },
+  { name: '三分割', w: 1000, h: 1400, paint: flat('#335c4c', disc('#f2c14e', 2 / 3, 1 / 3, 0.09)) },
   {
-    name: '灯台（三分割）',
-    w: 1000,
-    h: 1400,
-    paint(x, w, h) {
-      x.fillStyle = '#2d3047';
-      x.fillRect(0, 0, w, h);
-      x.fillStyle = '#e9e7e2';
-      x.fillRect(w * 0.64, h * 0.3, w * 0.06, h * 0.5);
-      x.fillStyle = '#f4d35e';
-      x.beginPath();
-      x.arc(w * 0.67, h * 0.32, w * 0.07, 0, Math.PI * 2);
-      x.fill();
-    },
-  },
-  {
-    name: '坂道（対角線）',
+    name: '対角線',
     w: 1500,
     h: 1000,
-    paint(x, w, h) {
-      x.fillStyle = '#c7d6c1';
-      x.fillRect(0, 0, w, h);
-      x.fillStyle = '#4f6d4a';
+    paint: flat('#e9c9c0', (x, w, h) => {
+      x.fillStyle = '#c0583a';
       x.beginPath();
       x.moveTo(0, 0);
       x.lineTo(w, h);
       x.lineTo(0, h);
       x.fill();
-    },
+    }),
   },
+  { name: '黄金比', w: 1200, h: 900, paint: flat('#2b2d42', disc('#8aa899', 0.382, 0.382, 0.11)) },
   {
-    name: '花（黄金比）',
-    w: 1200,
-    h: 900,
-    paint(x, w, h) {
-      x.fillStyle = '#efe6f2';
-      x.fillRect(0, 0, w, h);
-      x.fillStyle = '#b5468c';
-      x.beginPath();
-      x.arc(w * 0.38, h * 0.38, w * 0.07, 0, Math.PI * 2);
-      x.fill();
-    },
-  },
-  {
-    name: '門（シンメトリー）',
+    name: 'シンメトリー',
     w: 1000,
     h: 1250,
-    paint(x, w, h) {
-      x.fillStyle = '#1f2a33';
-      x.fillRect(0, 0, w, h);
-      x.fillStyle = '#d64545';
-      x.fillRect(w * 0.18, h * 0.2, w * 0.1, h * 0.8);
-      x.fillRect(w * 0.72, h * 0.2, w * 0.1, h * 0.8);
-      x.fillRect(w * 0.1, h * 0.18, w * 0.8, h * 0.07);
-    },
+    paint: flat('#f2c14e', (x, w, h) => {
+      x.fillStyle = '#2b2d42';
+      x.fillRect(w * 0.42, 0, w * 0.16, h);
+    }),
   },
-  {
-    name: '森',
-    w: 1400,
-    h: 1000,
-    paint(x, w, h) {
-      x.fillStyle = '#16302b';
-      x.fillRect(0, 0, w, h);
-      x.fillStyle = '#7fb069';
-      x.beginPath();
-      x.arc(w * 0.3, h * 0.66, h * 0.12, 0, Math.PI * 2);
-      x.fill();
-    },
-  },
+  { name: 'セージ', w: 1400, h: 1000, paint: flat('#8aa899') },
+  { name: 'ネイビー', w: 1000, h: 1000, paint: flat('#3d5a80') },
 ];
 
 export function makeSamples(): PhotoItem[] {
