@@ -856,3 +856,12 @@ body.editing { overflow: hidden; }
   /* 下部タブ：文字が2行に折れないように */
   .tabbar button { min-width: 0; white-space: nowrap; letter-spacing: -0.02em; }
 }
+
+/* 縦横比ロック */
+.ed-chip { flex: none; display: inline-flex; align-items: center; gap: 4px; height: 32px; padding: 0 10px; margin-right: 8px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--muted); font: inherit; font-size: 12px; white-space: nowrap; cursor: pointer; }
+.ed-chip[hidden] { display: none; }
+.ed-chip.active { border-color: var(--accent); color: var(--accent); font-weight: 700; }
+@media (max-width: 900px) { .ed-chip { height: 36px; } }
+.ed-chip svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.ed-chip:not(.active) svg path { transform: translate(3px, -1px); }
+@media (max-width: 420px) { .ed-auto button { padding: 0 9px; } .ed-auto span { font-size: 11px; } }

@@ -34,6 +34,7 @@ const ICON: Record<string, string> = {
   rot: '<path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/>',
   del: '<path d="M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13"/>',
   close: '<path d="M6 6l12 12M18 6 6 18"/>',
+  align: '<rect x="4" y="4" width="6.5" height="6.5" rx="1"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1"/>',
 };
 const svg = (k: string) => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICON[k]}</svg>`;
 
@@ -46,12 +47,12 @@ const TOOLS: { id: Tool; name: string }[] = [
   { id: 'hex', name: '六角' },
 ];
 const HINTS: Record<Tool, string> = {
-  select: 'マスをタップして選び、ドラッグで移動。右下の丸をドラッグで大きさを変えます。',
+  select: 'マスをタップして選び、ドラッグで移動。右下の丸で大きさ、上の丸で角度を変えます。',
   knife: 'なぞった線に沿って、マスを区切ります。直線はまっすぐ、曲線はなぞった形のまま区切ります。',
-  rect: 'ドラッグした範囲に1つ置きます。線をなぞると、重ならないよう大きさをそろえて線に沿って並べます。',
-  circle: 'ドラッグした範囲に1つ置きます。線をなぞると、重ならないよう大きさをそろえて線に沿って並べます。',
-  tri: 'ドラッグした範囲に1つ置きます。線をなぞると、重ならないよう大きさをそろえて線に沿って並べます。',
-  hex: 'ドラッグした範囲に1つ置きます。線をなぞると、重ならないよう大きさをそろえて線に沿って並べます。',
+  rect: 'ドラッグした範囲に置きます（タップで標準の大きさ）。置いたあとは「整列」でそろえられます。',
+  circle: 'ドラッグした範囲に置きます（タップで標準の大きさ）。置いたあとは「整列」でそろえられます。',
+  tri: 'ドラッグした範囲に置きます（タップで標準の大きさ）。置いたあとは「整列」でそろえられます。',
+  hex: 'ドラッグした範囲に置きます（タップで標準の大きさ）。置いたあとは「整列」でそろえられます。',
 };
 
 // ---------- 幾何 ----------
@@ -341,90 +342,91 @@ function makeShape(kind: ShapeKind, cx: number, cy: number, w: number, h: number
   }
 }
 
-/** 中心点どうしが重ならない大きさにする */
-function fitSize(centers: Pt[], s: number) {
-  let dmin = Infinity;
-  for (let i = 0; i < centers.length; i++)
-    for (let j = i + 1; j < centers.length; j++) dmin = Math.min(dmin, Math.hypot(centers[i].x - centers[j].x, centers[i].y - centers[j].y));
-  return Math.min(s, dmin * 0.9);
-}
-
-type Pattern = 'grid' | 'stagger' | 'ring' | 'spiral' | 'wave';
+type Pattern = 'grid' | 'stagger' | 'ring' | 'mount' | 'wave';
 const PATTERNS: { id: Pattern; name: string }[] = [
   { id: 'grid', name: '格子' },
   { id: 'stagger', name: '千鳥' },
   { id: 'ring', name: '円形' },
-  { id: 'spiral', name: 'らせん' },
+  { id: 'mount', name: '山形' },
   { id: 'wave', name: '波' },
 ];
-/** 規則的な配置：中心点と大きさ（幅 w・高さ h の枠の中） */
+/** 図形どうしの中心の間隔（図形の大きさ 1 に対して） */
+const GAP = 1.16;
+/** 行ごとの個数から、中央そろえの並びを作る（大きさ 1 の図形の中心） */
+function rowsOf(counts: number[], dy: number, shift = 0): Pt[] {
+  const out: Pt[] = [];
+  counts.forEach((k, r) => {
+    const off = shift && r % 2 ? shift : 0;
+    for (let i = 0; i < k; i++) out.push({ x: (i - (k - 1) / 2) * GAP + off, y: r * dy });
+  });
+  return out;
+}
+/** 四角でも重ならないよう、どの2つも縦か横に GAP 以上離れるように広げる */
+function spread(c: Pt[]): Pt[] {
+  let d = Infinity;
+  for (let i = 0; i < c.length; i++)
+    for (let j = i + 1; j < c.length; j++) d = Math.min(d, Math.max(Math.abs(c[i].x - c[j].x), Math.abs(c[i].y - c[j].y)));
+  const k = d > 1e-9 && d < Infinity ? GAP / d : 1;
+  return c.map((p) => ({ x: p.x * k, y: p.y * k }));
+}
+/** 大きさ 1 の図形の並びを、枠いっぱい・中央に収める */
+function fitInto(c: Pt[], w: number, h: number): { c: Pt[]; s: number } {
+  const b = bbox(c);
+  const bw = b.x1 - b.x0 + 1, bh = b.y1 - b.y0 + 1;
+  const k = Math.min((w * 0.92) / bw, (h * 0.92) / bh);
+  const mx = (b.x0 + b.x1) / 2, my = (b.y0 + b.y1) / 2;
+  return { c: c.map((p) => ({ x: w / 2 + (p.x - mx) * k, y: h / 2 + (p.y - my) * k })), s: k };
+}
+/** 候補の中から、図形がいちばん大きくなるものを選ぶ */
+function best(cands: Pt[][], w: number, h: number) {
+  let out = fitInto(cands[0], w, h);
+  for (const c of cands.slice(1)) {
+    const f = fitInto(c, w, h);
+    if (f.s > out.s + 1e-9) out = f;
+  }
+  return out;
+}
+/** 格子の行ごとの個数（列数 cols。端数の行は真ん中に） */
+function gridRows(n: number, cols: number) {
+  const rows = Math.ceil(n / cols);
+  return Array.from({ length: rows }, (_, r) => (r < rows - 1 ? cols : n - cols * (rows - 1)));
+}
+/** 規則的な配置：中心点と大きさ（幅 w・高さ h の枠の中。上下左右とも中央そろえ） */
 function patternCenters(p: Pattern, n: number, w: number, h: number): { c: Pt[]; s: number } {
-  const m = Math.min(w, h);
-  if (n <= 1) return { c: [{ x: w / 2, y: h / 2 }], s: m * 0.7 };
+  if (n <= 1) return fitInto([{ x: 0, y: 0 }], w, h);
+  const cols = Array.from({ length: n }, (_, i) => i + 1);
   switch (p) {
     case 'grid':
-    case 'stagger': {
-      // 枠の縦横比に合う列数を選ぶ（千鳥は1行おきに半分ずらす）
-      let best = { cols: 1, rows: n, s: 0 };
-      for (let cols = 1; cols <= n; cols++) {
-        const rows = Math.ceil(n / cols);
-        const cw = w / (cols + (p === 'stagger' ? 0.5 : 0));
-        const rh = h / (p === 'stagger' ? 1 + (rows - 1) * 0.87 : rows);
-        const s = Math.min(cw, rh);
-        if (s > best.s) best = { cols, rows, s };
-      }
-      const { cols, rows, s } = best;
-      const dy = p === 'stagger' ? s * 0.87 : s;
-      const totalH = p === 'stagger' ? s + (rows - 1) * dy : rows * s;
-      const c: Pt[] = [];
-      for (let r = 0; r < rows; r++) {
-        const inRow = Math.min(cols, n - r * cols);
-        const off = p === 'stagger' && r % 2 ? s / 2 : 0;
-        const rowW = inRow * s + (p === 'stagger' ? s / 2 : 0);
-        const x0 = (w - rowW) / 2 + s / 2 + (p === 'stagger' ? off : 0);
-        for (let i = 0; i < inRow; i++) c.push({ x: x0 + i * s, y: (h - totalH) / 2 + s / 2 + r * dy });
-      }
-      return { c, s: s * 0.9 };
-    }
+      return best(cols.map((k) => rowsOf(gridRows(n, k), GAP)), w, h);
+    case 'stagger':
+      // 1行おきに半分ずらす
+      return best(cols.filter((k) => k < n).map((k) => rowsOf(gridRows(n, k), GAP * 0.87, GAP / 2)), w, h);
     case 'ring': {
-      // 6個以上は、真ん中に1つ大きく置いて、残りを円周に
-      const center = n >= 6;
-      const k = center ? n - 1 : n;
-      const sn = Math.sin(Math.PI / k);
-      const R = (m / 2) * 0.95 / (1 + sn);
-      const s = 2 * R * sn * 0.92;
-      const c = Array.from({ length: k }, (_, i) => {
-        const a = -Math.PI / 2 + (i / k) * Math.PI * 2;
-        return { x: w / 2 + Math.cos(a) * R, y: h / 2 + Math.sin(a) * R };
-      });
-      if (center) return { c: [{ x: w / 2, y: h / 2 }, ...c], s };
-      return { c, s };
-    }
-    case 'spiral': {
-      // ひまわりの種の並び（黄金角）
-      const g = Math.PI * (3 - Math.sqrt(5));
       const c = Array.from({ length: n }, (_, i) => {
-        const r = Math.sqrt((i + 0.5) / n);
-        return { x: w / 2 + Math.cos(i * g) * r * (w / 2) * 0.82, y: h / 2 + Math.sin(i * g) * r * (h / 2) * 0.82 };
+        const a = -Math.PI / 2 + (i / n) * Math.PI * 2;
+        return { x: Math.cos(a), y: Math.sin(a) };
       });
-      return { c, s: m * 0.5 };
+      return fitInto(spread(c), w, h);
+    }
+    case 'mount': {
+      // 上から 1, 2, 3… と増やす（あまりは一番下の行へ）
+      const table: Record<number, number[]> = { 2: [1, 1], 3: [1, 2], 4: [1, 3], 5: [2, 3], 6: [1, 2, 3] };
+      const counts: number[] = table[n] ? [...table[n]] : [];
+      let left = table[n] ? 0 : n;
+      for (let k = 1; left > 0; k++) {
+        if (left - k < k + 1 && left - k > 0) {
+          counts.push(left);
+          break;
+        }
+        counts.push(Math.min(k, left));
+        left -= k;
+      }
+      return fitInto(rowsOf(counts, GAP * 0.87), w, h);
     }
     case 'wave': {
-      // 枠の長い方向に、ゆるい波の形で並べる。数が多いときは2列
-      const horiz = w >= h;
-      const lines = n > 9 ? 2 : 1;
-      const per = Math.ceil(n / lines);
-      const c: Pt[] = [];
-      for (let l = 0; l < lines; l++) {
-        const cnt = Math.min(per, n - l * per);
-        for (let i = 0; i < cnt; i++) {
-          const t = (i + 0.5) / cnt;
-          const base = lines === 1 ? 0.5 : 0.3 + l * 0.4;
-          const wv = Math.sin(t * Math.PI * 2 + l * Math.PI) * (lines === 1 ? 0.2 : 0.1);
-          c.push(horiz ? { x: t * w, y: (base + wv) * h } : { x: (base + wv) * w, y: t * h });
-        }
-      }
-      return { c, s: (horiz ? w : h) / per };
+      // ジグザグに1列。枠の長い向きに並べる
+      const line = spread(Array.from({ length: n }, (_, i) => ({ x: (i - (n - 1) / 2) * 0.6, y: i % 2 ? 0.5 : -0.5 })));
+      return best([line, line.map((q) => ({ x: q.y, y: q.x }))], w, h);
     }
   }
 }
@@ -451,6 +453,7 @@ export function initCustomEditor(deps: EditorDeps) {
     <p class="ed-hint" id="edHint"></p>
     <div class="ed-opts">
       <div class="ed-toolopt">
+      <button class="ed-chip" id="edLock" aria-pressed="true" aria-label="縦横比ロック" title="縦横比ロック"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>縦横比</button>
       <div class="ed-auto" id="edSizeRow"><span>自動配置</span>${PATTERNS.map((p) => `<button data-pat="${p.id}">${p.name}</button>`).join('')}</div>
       <div class="ed-cut" id="edCutRow">
         <div class="seg2 ed-cutmode"><button data-cut="line">直線</button><button data-cut="curve">曲線</button></div>
@@ -458,6 +461,7 @@ export function initCustomEditor(deps: EditorDeps) {
       </div>
       </div>
       <div class="ed-acts">
+        <button class="ed-icon" id="edAlign" aria-label="整列" title="整列">${svg('align')}</button>
         <button class="ed-icon" id="edUndo" aria-label="元に戻す">${svg('undo')}</button>
         <button class="ed-icon" id="edRedo" aria-label="やり直す">${svg('redo')}</button>
         <button class="ed-icon" id="edDup" aria-label="複製">${svg('dup')}</button>
@@ -474,7 +478,11 @@ export function initCustomEditor(deps: EditorDeps) {
   const stageEl = q('#edStage');
 
   let cells: Pt[][] = [];
+  /** マスごとの角度（ラジアン）。大きさを変えるときに形がゆがまないよう、マスの向きで伸ばす */
+  let rots: number[] = [];
   let sel = -1;
+  /** 縦横比ロック（置くとき・大きさを変えるとき） */
+  let lockAspect = true;
   let tool: Tool = 'knife';
   /** タップで置くときの大きさ（短辺比） */
   const size = 0.2;
@@ -517,7 +525,29 @@ export function initCustomEditor(deps: EditorDeps) {
     return { x: p.x / f.iw, y: p.y / f.ih };
   };
 
-  const snapshot = () => JSON.stringify(cells);
+  const snapshot = () => JSON.stringify({ c: cells, r: rots });
+  const restore = (snap: string) => {
+    const v = JSON.parse(snap);
+    cells = v.c;
+    rots = v.r;
+  };
+  const setCells = (cs: Pt[][]) => {
+    cells = cs;
+    rots = cs.map(() => 0);
+  };
+  const rotAround = (pts: Pt[], c: Pt, a: number) => {
+    const cs = Math.cos(a), sn = Math.sin(a);
+    return pts.map((p) => ({ x: c.x + (p.x - c.x) * cs - (p.y - c.y) * sn, y: c.y + (p.x - c.x) * sn + (p.y - c.y) * cs }));
+  };
+  /** 画面の 1px が、縦横比をそろえた座標でいくつか */
+  const pxPerScreen = () => frame().W / view.cw;
+  /** マスの向きにそろえた枠（中心 c・角度 a・向きをそろえたときの範囲 b） */
+  function cellFrame(i: number) {
+    const px = cells[i].map(toPx);
+    const c = centroid(px);
+    const a = rots[i] || 0;
+    return { c, a, b: bbox(rotAround(px, c, -a)) };
+  }
   const commit = (before: string) => {
     if (before === snapshot()) return;
     past.push(before);
@@ -531,6 +561,10 @@ export function initCustomEditor(deps: EditorDeps) {
     root.querySelectorAll<HTMLButtonElement>('#edTools button').forEach((b) => b.classList.toggle('active', b.dataset.tool === tool));
     q('#edHint').textContent = HINTS[tool];
     q('#edSizeRow').hidden = tool === 'select' || tool === 'knife';
+    q('#edLock').hidden = tool === 'knife';
+    q('#edLock').classList.toggle('active', lockAspect);
+    q('#edLock').setAttribute('aria-pressed', String(lockAspect));
+    q<HTMLButtonElement>('#edAlign').disabled = cells.length < 2;
     q('#edCutRow').hidden = tool !== 'knife';
     q('#edSmoothRow').hidden = cutMode !== 'curve';
     root.querySelectorAll<HTMLButtonElement>('[data-cut]').forEach((b) => b.classList.toggle('active', b.dataset.cut === cutMode));
@@ -615,18 +649,46 @@ export function initCustomEditor(deps: EditorDeps) {
     });
     // 選択中のマスの大きさ変更ハンドル
     if (sel >= 0 && cells[sel]) {
-      const h = handlePos();
+      const hs = handles();
       x.beginPath();
-      x.arc(h.x, h.y, 9, 0, Math.PI * 2);
-      x.fillStyle = '#fff';
-      x.fill();
-      x.lineWidth = 2.5;
+      x.moveTo(hs.top.x, hs.top.y);
+      x.lineTo(hs.rot.x, hs.rot.y);
+      x.lineWidth = 1.5;
       x.strokeStyle = '#e8792b';
       x.stroke();
+      for (const h of [hs.scale, hs.rot]) {
+        x.beginPath();
+        x.arc(h.x, h.y, 9, 0, Math.PI * 2);
+        x.fillStyle = '#fff';
+        x.fill();
+        x.lineWidth = 2.5;
+        x.strokeStyle = '#e8792b';
+        x.stroke();
+      }
+      // 角度のしるし（回る矢印）
+      x.beginPath();
+      x.arc(hs.rot.x, hs.rot.y, 4.5, -Math.PI * 0.2, Math.PI * 1.3);
+      x.lineWidth = 1.5;
+      x.stroke();
+      if (drag?.kind === 'rot') {
+        let deg = Math.round(((rots[sel] * 180) / Math.PI) % 360);
+        if (deg > 180) deg -= 360;
+        if (deg <= -180) deg += 360;
+        x.font = "700 12px Inter, 'Noto Sans JP Variable', sans-serif";
+        x.textAlign = 'center';
+        x.textBaseline = 'middle';
+        const tx = hs.rot.x, ty = hs.rot.y - 22;
+        x.fillStyle = 'rgba(20,20,22,.75)';
+        x.beginPath();
+        x.roundRect(tx - 22, ty - 10, 44, 20, 10);
+        x.fill();
+        x.fillStyle = '#fff';
+        x.fillText(`${deg}°`, tx, ty + 0.5);
+      }
     }
     // なぞっている線
-    if (stroke && stroke.length > 1) {
-      const pts = (tool === 'knife' ? cutPath(stroke) : stroke).map(toScreen);
+    if (stroke && stroke.length > 1 && tool === 'knife') {
+      const pts = cutPath(stroke).map(toScreen);
       x.beginPath();
       pts.forEach((p, j) => (j ? x.lineTo(p.x, p.y) : x.moveTo(p.x, p.y)));
       x.lineWidth = 3;
@@ -636,60 +698,57 @@ export function initCustomEditor(deps: EditorDeps) {
       x.stroke();
       x.lineWidth = 1.6;
       x.strokeStyle = '#e8792b';
-      x.setLineDash(tool === 'knife' ? [6, 4] : []);
+      x.setLineDash([6, 4]);
       x.stroke();
       x.setLineDash([]);
-      // 図形の仮置き
-      if (tool !== 'knife' && tool !== 'select') {
-        for (const shp of shapesFor(stroke)) {
-          const sp = shp.map(toScreen);
-          x.beginPath();
-          sp.forEach((p, j) => (j ? x.lineTo(p.x, p.y) : x.moveTo(p.x, p.y)));
-          x.closePath();
-          x.fillStyle = 'rgba(232,121,43,.22)';
-          x.fill();
-          x.lineWidth = 1.5;
-          x.strokeStyle = '#e8792b';
-          x.stroke();
-        }
-      }
+    }
+    // 図形の仮置き
+    if (stroke && tool !== 'knife' && tool !== 'select') {
+      const sp = shapeFor(stroke).map(toScreen);
+      x.beginPath();
+      sp.forEach((p, j) => (j ? x.lineTo(p.x, p.y) : x.moveTo(p.x, p.y)));
+      x.closePath();
+      x.fillStyle = 'rgba(232,121,43,.22)';
+      x.fill();
+      x.lineWidth = 1.5;
+      x.strokeStyle = '#e8792b';
+      x.stroke();
     }
   }
 
-  function handlePos() {
-    const b = bbox(cells[sel]);
-    return toScreen({ x: b.x1, y: b.y1 });
+  /** 選択中のマスのハンドル（画面の CSS px）：右下＝大きさ、上＝角度 */
+  function handles() {
+    const { c, a, b } = cellFrame(sel);
+    const back = (p: Pt) => toScreen(fromPx(rotAround([p], c, a)[0]));
+    const off = 30 * pxPerScreen();
+    const mx = (b.x0 + b.x1) / 2;
+    let top = back({ x: mx, y: b.y0 }), rot = back({ x: mx, y: b.y0 - off });
+    // 画面の外に出るときは下側に出す
+    if (rot.y < 10 || rot.x < 10 || rot.x > view.cw - 10 || rot.y > view.ch - 10) {
+      top = back({ x: mx, y: b.y1 });
+      rot = back({ x: mx, y: b.y1 + off });
+    }
+    return { scale: back({ x: b.x1, y: b.y1 }), rot, top };
   }
 
-  /** なぞった線から、置く図形を決める（0..1 の多角形） */
-  function shapesFor(path: Pt[]): Pt[][] {
+  /** ドラッグした範囲に置く図形（0..1 の多角形）。始点から今の指の位置までの四角に収める */
+  function shapeFor(path: Pt[]): Pt[] {
     const kind = tool as ShapeKind;
     const f = frame();
-    const px = path.map(toPx);
-    const L = pathLen(px);
-    const a = px[0], b = px[px.length - 1];
-    const chord = Math.hypot(b.x - a.x, b.y - a.y);
-    const unit = size * Math.min(f.iw, f.ih);
-    const bb = bbox(px);
-    const bw = bb.x1 - bb.x0, bh = bb.y1 - bb.y0;
-    // 短いタップ：既定の大きさで1つ
-    if (L < Math.min(f.iw, f.ih) * 0.03) return [makeShape(kind, a.x, a.y, unit, unit).map(fromPx)];
-    // 曲線や細長い線：線に沿って並べる
-    const along = L > chord * 1.25 || (Math.min(bw, bh) < Math.max(bw, bh) * 0.4 && L > unit * 1.6);
-    if (along) {
-      // ほぼまっすぐなら直線に、曲がっていれば滑らかにした線に沿わせる
-      const straight = L < chord * 1.08;
-      const line = straight ? [a, b] : smooth([a, ...resample(px, Math.min(f.iw, f.ih) * 0.012), b], 0.6);
-      const len = pathLen(line);
-      // 数と大きさは線の長さから自動で決める（同じ大きさ・等間隔・重ならない）
-      const room = Math.max(1, deps.maxCells - cells.length);
-      const n = Math.max(1, Math.min(room, Math.round(len / (Math.min(f.iw, f.ih) * 0.2))));
-      const centers = Array.from({ length: n }, (_, i) => pointAt(line, ((i + 0.5) / n) * len));
-      const sz = Math.min(Math.min(f.iw, f.ih) * 0.45, fitSize(centers, (len / n) * 0.9));
-      return centers.map((p) => makeShape(kind, p.x, p.y, sz, sz).map(fromPx));
+    const m = Math.min(f.iw, f.ih);
+    const a = toPx(path[0]), b = toPx(path[path.length - 1]);
+    const unit = size * m;
+    let dx = b.x - a.x, dy = b.y - a.y;
+    // タップ：標準の大きさで1つ
+    if (Math.hypot(dx, dy) < m * 0.03) return makeShape(kind, a.x, a.y, unit, unit).map(fromPx);
+    if (lockAspect) {
+      const k = Math.max(Math.abs(dx), Math.abs(dy));
+      dx = (dx < 0 ? -1 : 1) * k;
+      dy = (dy < 0 ? -1 : 1) * k;
     }
-    // それ以外：なぞった範囲に1つ
-    return [makeShape(kind, (bb.x0 + bb.x1) / 2, (bb.y0 + bb.y1) / 2, Math.max(bw, unit * 0.2), Math.max(bh, unit * 0.2)).map(fromPx)];
+    const min = m * 0.04;
+    const w = Math.max(Math.abs(dx), min), h = Math.max(Math.abs(dy), min);
+    return makeShape(kind, a.x + (dx < 0 ? -w : w) / 2, a.y + (dy < 0 ? -h : h) / 2, w, h).map(fromPx);
   }
 
   /** 区切りに使う線（0..1）：直線なら始点と終点、曲線なら滑らかにした線 */
@@ -716,15 +775,18 @@ export function initCustomEditor(deps: EditorDeps) {
     let thin = false;
     const opts: CutOpts = { from: E, to: E + L, minIn: unit * 0.06, minArea: f.iw * f.ih * 0.012, minThick: unit * 0.07, onThin: () => (thin = true) };
     const out: Pt[][] = [];
+    const outR: number[] = [];
     let made = 0;
-    for (const c of cells) {
+    for (const [ci, c] of cells.entries()) {
       const pieces = out.length + (cells.length - out.length) < deps.maxCells ? cutPoly(c.map(toPx), px, opts) : [c.map(toPx)];
       const room = deps.maxCells - (cells.length + made);
       const use = pieces.length - 1 <= room ? pieces : [c.map(toPx)];
       made += use.length - 1;
       out.push(...use.map((p) => p.map(fromPx)));
+      outR.push(...use.map(() => (use.length > 1 ? 0 : rots[ci] || 0)));
     }
     cells = out;
+    rots = outR;
     return { made, thin };
   }
 
@@ -733,7 +795,8 @@ export function initCustomEditor(deps: EditorDeps) {
   type Drag =
     | { kind: 'draw'; pid: number; before: string }
     | { kind: 'move'; pid: number; before: string; start: Pt; orig: Pt[] }
-    | { kind: 'scale'; pid: number; before: string; start: Pt; orig: Pt[]; c: Pt };
+    | { kind: 'scale'; pid: number; before: string; start: Pt; loc: Pt[]; c: Pt; a: number; bc: Pt }
+    | { kind: 'rot'; pid: number; before: string; orig: Pt[]; c: Pt; a0: number; s0: number };
   let drag: Drag | null = null;
 
   canvas.addEventListener('pointerdown', (e) => {
@@ -748,10 +811,18 @@ export function initCustomEditor(deps: EditorDeps) {
     if (tool === 'select') {
       const r = canvas.getBoundingClientRect();
       if (sel >= 0) {
-        const h = handlePos();
-        if (Math.hypot(e.clientX - r.left - h.x, e.clientY - r.top - h.y) < 20) {
-          const b = bbox(cells[sel]);
-          drag = { kind: 'scale', pid: e.pointerId, before, start: p, orig: cells[sel].map((v) => ({ ...v })), c: { x: (b.x0 + b.x1) / 2, y: (b.y0 + b.y1) / 2 } };
+        const hs = handles();
+        const hit = (h: Pt) => Math.hypot(e.clientX - r.left - h.x, e.clientY - r.top - h.y) < 20;
+        const { c, a, b } = cellFrame(sel);
+        const pp = toPx(p);
+        if (hit(hs.rot)) {
+          drag = { kind: 'rot', pid: e.pointerId, before, orig: cells[sel].map(toPx), c, a0: a, s0: Math.atan2(pp.y - c.y, pp.x - c.x) };
+          draw();
+          return;
+        }
+        if (hit(hs.scale)) {
+          const loc = rotAround(cells[sel].map(toPx), c, -a);
+          drag = { kind: 'scale', pid: e.pointerId, before, start: rotAround([pp], c, -a)[0], loc, c, a, bc: { x: (b.x0 + b.x1) / 2, y: (b.y0 + b.y1) / 2 } };
           return;
         }
       }
@@ -782,14 +853,31 @@ export function initCustomEditor(deps: EditorDeps) {
       dx = lim(dx, b.x0, b.x1);
       dy = lim(dy, b.y0, b.y1);
       cells[sel] = drag.orig.map((v) => ({ x: v.x + dx, y: v.y + dy }));
+    } else if (drag.kind === 'rot') {
+      const { c, a0, s0, orig } = drag;
+      const pp = toPx(p);
+      let ang = a0 + Math.atan2(pp.y - c.y, pp.x - c.x) - s0;
+      // 15度ごとに吸い付く
+      const step = Math.PI / 12;
+      const snap = Math.round(ang / step) * step;
+      if (Math.abs(ang - snap) < (4 * Math.PI) / 180) ang = snap;
+      cells[sel] = rotAround(orig, c, ang - a0).map(fromPx);
+      rots[sel] = ang;
     } else {
-      const { c, start, orig } = drag;
+      // マスの向きにそろえて伸ばす（回したマスもゆがまない）
+      const { c, a, bc, start, loc } = drag;
+      const pl = rotAround([toPx(p)], c, -a)[0];
       const fx = (v: number, s: number, o: number) => {
         const d0 = s - o;
         return Math.abs(d0) < 1e-4 ? 1 : Math.min(8, Math.max(0.08, (v - o) / d0));
       };
-      const sx = fx(p.x, start.x, c.x), sy = fx(p.y, start.y, c.y);
-      cells[sel] = orig.map((v) => ({ x: c.x + (v.x - c.x) * sx, y: c.y + (v.y - c.y) * sy }));
+      let sx = fx(pl.x, start.x, bc.x), sy = fx(pl.y, start.y, bc.y);
+      if (lockAspect) {
+        const d0 = Math.hypot(start.x - bc.x, start.y - bc.y) || 1;
+        sx = sy = Math.min(8, Math.max(0.08, Math.hypot(pl.x - bc.x, pl.y - bc.y) / d0));
+      }
+      const scaled = loc.map((v) => ({ x: bc.x + (v.x - bc.x) * sx, y: bc.y + (v.y - bc.y) * sy }));
+      cells[sel] = rotAround(scaled, c, a).map(fromPx);
     }
     draw();
   });
@@ -806,12 +894,10 @@ export function initCustomEditor(deps: EditorDeps) {
           if (r && !r.made && path.length > 2)
             deps.toast(cells.length >= deps.maxCells ? `マスは最大${deps.maxCells}個までです` : r.thin ? '細すぎるマスになるので区切りませんでした。もう少し内側をなぞってください' : '区切るマスがありませんでした');
         } else {
-          const add = shapesFor(path);
-          const room = deps.maxCells - cells.length;
-          if (room <= 0) deps.toast(`マスは最大${deps.maxCells}個までです`);
+          if (cells.length >= deps.maxCells) deps.toast(`マスは最大${deps.maxCells}個までです`);
           else {
-            if (add.length > room) deps.toast(`マスは最大${deps.maxCells}個までなので、${room}個だけ置きました`);
-            cells.push(...add.slice(0, room));
+            cells.push(shapeFor(path));
+            rots.push(0);
           }
         }
       }
@@ -841,7 +927,7 @@ export function initCustomEditor(deps: EditorDeps) {
     const s = past.pop();
     if (s == null) return;
     future.push(snapshot());
-    cells = JSON.parse(s);
+    restore(s);
     sel = -1;
     dirty = true;
     syncUI();
@@ -850,7 +936,7 @@ export function initCustomEditor(deps: EditorDeps) {
     const s = future.pop();
     if (s == null) return;
     past.push(snapshot());
-    cells = JSON.parse(s);
+    restore(s);
     sel = -1;
     dirty = true;
     syncUI();
@@ -861,6 +947,7 @@ export function initCustomEditor(deps: EditorDeps) {
       if (sel < 0) return;
       if (cells.length >= deps.maxCells) return deps.toast(`マスは最大${deps.maxCells}個までです`);
       cells.push(cells[sel].map((p) => ({ x: p.x + 0.04, y: p.y + 0.04 })));
+      rots.push(rots[sel] || 0);
       sel = cells.length - 1;
     }),
   );
@@ -872,6 +959,7 @@ export function initCustomEditor(deps: EditorDeps) {
       const c = centroid(px);
       const a = Math.PI / 12, cs = Math.cos(a), sn = Math.sin(a);
       cells[sel] = px.map((p) => fromPx({ x: c.x + (p.x - c.x) * cs - (p.y - c.y) * sn, y: c.y + (p.x - c.x) * sn + (p.y - c.y) * cs }));
+      rots[sel] = (rots[sel] || 0) + a;
     }),
   );
   q('#edDel').addEventListener(
@@ -879,6 +967,7 @@ export function initCustomEditor(deps: EditorDeps) {
     act(() => {
       if (sel < 0) return;
       cells.splice(sel, 1);
+      rots.splice(sel, 1);
       sel = -1;
     }),
   );
@@ -891,6 +980,43 @@ export function initCustomEditor(deps: EditorDeps) {
   q<HTMLInputElement>('#edSmooth').addEventListener('input', () => {
     smoothness = Number(q<HTMLInputElement>('#edSmooth').value);
   });
+  q('#edLock').addEventListener('click', () => {
+    lockAspect = !lockAspect;
+    syncUI();
+  });
+  // 整列：いまのマスを、位置の順番はそのままに、同じ大きさで格子にそろえる
+  q('#edAlign').addEventListener(
+    'click',
+    act(() => {
+      const n = cells.length;
+      if (n < 2) return;
+      const f = frame();
+      const { c: slots, s: sz } = patternCenters('grid', n, f.iw, f.ih);
+      const px = cells.map((c) => c.map(toPx));
+      const info = px.map((p, i) => {
+        const b = bbox(p);
+        return { i, b, cx: (b.x0 + b.x1) / 2, cy: (b.y0 + b.y1) / 2 };
+      });
+      // 上から行ごとに分け、行の中は左から（格子の行の数に合わせる）
+      const ys = [...new Set(slots.map((p) => Math.round(p.y)))];
+      const counts = ys.map((y) => slots.filter((p) => Math.round(p.y) === y).length);
+      const byY = [...info].sort((a, b) => a.cy - b.cy);
+      const order: typeof info = [];
+      let k = 0;
+      for (const cnt of counts) {
+        order.push(...byY.slice(k, k + cnt).sort((a, b) => a.cx - b.cx));
+        k += cnt;
+      }
+      const next = cells.slice();
+      order.forEach((o, j) => {
+        const t = slots[j];
+        const m = Math.max(o.b.x1 - o.b.x0, o.b.y1 - o.b.y0) || 1;
+        const sc = sz / m;
+        next[o.i] = px[o.i].map((p) => fromPx({ x: t.x + (p.x - o.cx) * sc, y: t.y + (p.y - o.cy) * sc }));
+      });
+      cells = next;
+    }),
+  );
   // 自動配置：写真の枚数ぶん、選んだ図形を規則的に並べる（いまのマスは置き換え）
   root.querySelectorAll<HTMLButtonElement>('[data-pat]').forEach((b) =>
     b.addEventListener(
@@ -898,10 +1024,10 @@ export function initCustomEditor(deps: EditorDeps) {
       act(() => {
         const kind = (tool === 'select' || tool === 'knife' ? 'circle' : tool) as ShapeKind;
         const f = frame();
-        const n = Math.max(1, Math.min(deps.maxCells, deps.photos().length));
-        const { c, s: s0 } = patternCenters(b.dataset.pat as Pattern, n, f.iw, f.ih);
-        const sz = fitSize(c, s0);
-        cells = c.map((p) => makeShape(kind, p.x, p.y, sz, sz).map(fromPx));
+        // 多すぎると図形が小さくなるので、4〜6個にしぼる
+        const n = Math.max(1, Math.min(6, deps.photos().length));
+        const { c, s: sz } = patternCenters(b.dataset.pat as Pattern, n, f.iw, f.ih);
+        setCells(c.map((p) => makeShape(kind, p.x, p.y, sz, sz).map(fromPx)));
         sel = -1;
       }),
     ),
@@ -910,7 +1036,7 @@ export function initCustomEditor(deps: EditorDeps) {
     const v = q<HTMLSelectElement>('#edTpl').value;
     if (!v) return;
     const before = snapshot();
-    cells = v === 'blank' ? [[{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }]] : v === 'empty' ? [] : deps.templateCells(v).slice(0, deps.maxCells);
+    setCells(v === 'blank' ? [[{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }]] : v === 'empty' ? [] : deps.templateCells(v).slice(0, deps.maxCells));
     sel = -1;
     q<HTMLSelectElement>('#edTpl').value = '';
     commit(before);
@@ -966,7 +1092,7 @@ export function initCustomEditor(deps: EditorDeps) {
   function open(opts: { editId?: string; fromLayout?: string } = {}) {
     const c = opts.editId ? getCustom(opts.editId) : null;
     editingId = c ? c.id : null;
-    cells = c ? JSON.parse(JSON.stringify(c.cells)) : opts.fromLayout ? deps.templateCells(opts.fromLayout).slice(0, deps.maxCells) : [[{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }]];
+    setCells(c ? JSON.parse(JSON.stringify(c.cells)) : opts.fromLayout ? deps.templateCells(opts.fromLayout).slice(0, deps.maxCells) : [[{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }]]);
     past = [];
     future = [];
     sel = -1;
