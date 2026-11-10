@@ -90,4 +90,4 @@ jobs:
 
             ${{ env.UPDATE_NOTE }}
 
-            ブラウザ版: https://rivrice.github.io/photo-tile-maker/
+            ブラウザ版: https://rivrice.github.io/Photo-tile-maker/
