@@ -429,14 +429,23 @@ function clampView(p: PhotoItem, t: Tile, cx: number, cy: number, z: number) {
   return { x: Math.min(1 - hw, Math.max(hw, cx)), y: Math.min(1 - hh, Math.max(hh, cy)), z };
 }
 
-/** 位置調整：目標の中心へ動かす。端で動かせない方向は、動かせるところまで自動で拡大する */
-function panTo(p: PhotoItem, t: Tile, cx: number, cy: number, minZoom: number) {
+/**
+ * 位置を「動かせる範囲の中の割合」(0..1) で扱う。サイズ（倍率）は変えない。
+ * 動かせる幅がない方向は can が false になる。
+ */
+function getPos(p: PhotoItem, t: Tile) {
   const { sw1, sh1 } = baseView(p, t);
-  const room = (c: number) => Math.max(0.02, 2 * Math.min(c, 1 - c));
-  const need = Math.max(minZoom, sw1 / room(cx), sh1 / room(cy));
-  const v = clampView(p, t, cx, cy, need);
-  p.pan = { x: v.x, y: v.y };
-  p.zoom = v.z;
+  const z = Math.min(MAX_ZOOM, Math.max(1, p.zoom));
+  const rx = 1 - sw1 / z, ry = 1 - sh1 / z;
+  const c = currentView(p, t).c;
+  const canX = rx > 0.002, canY = ry > 0.002;
+  const f = (c: number, r: number, ok: boolean) => (ok ? Math.min(1, Math.max(0, (c - (1 - r) / 2) / r)) : 0.5);
+  return { u: f(c.x, rx, canX), v: f(c.y, ry, canY), canX, canY, rx, ry };
+}
+function setPos(p: PhotoItem, t: Tile, u: number, v: number) {
+  const { rx, ry } = getPos(p, t);
+  const cl = (n: number) => Math.min(1, Math.max(0, n));
+  p.pan = { x: (1 - rx) / 2 + cl(u) * Math.max(0, rx), y: (1 - ry) / 2 + cl(v) * Math.max(0, ry) };
 }
 
 /** いま見えている範囲の中心（0..1）と、その時の切り出し範囲 */
@@ -777,13 +786,26 @@ function renderAdjPanel() {
   $<HTMLInputElement>('#adjAngle').value = String(p.angle);
   $('#adjAngleOut').textContent = `${p.angle > 0 ? '+' : ''}${p.angle}°`;
   const st = selectedTile();
-  const c = st ? currentView(st.p, st.t).c : { x: 0.5, y: 0.5 };
-  $<HTMLInputElement>('#adjX').value = String(c.x);
-  $<HTMLInputElement>('#adjY').value = String(c.y);
-  // トラックパッドの点：写真のどこを見ているか
+  const pos = st ? getPos(st.p, st.t) : { u: 0.5, v: 0.5, canX: false, canY: false };
+  const ax = $<HTMLInputElement>('#adjX'), ay = $<HTMLInputElement>('#adjY');
+  ax.value = String(pos.u);
+  ay.value = String(pos.v);
+  ax.disabled = !pos.canX;
+  ay.disabled = !pos.canY;
+  // トラックパッドの点：動かせる範囲の中で、いまどこにいるか
   const dot = $('#tpDot');
-  dot.style.left = `${c.x * 100}%`;
-  dot.style.top = `${c.y * 100}%`;
+  dot.style.left = `${pos.u * 100}%`;
+  dot.style.top = `${pos.v * 100}%`;
+  const msg = pos.canX && pos.canY
+    ? 'なぞって位置を調整'
+    : pos.canX
+      ? '左右に動かせます（上下はサイズを上げると動かせます）'
+      : pos.canY
+        ? '上下に動かせます（左右はサイズを上げると動かせます）'
+        : 'サイズを上げると動かせます';
+  $('#tpHint').textContent = msg;
+  $('#trackpad').classList.toggle('lock-x', !pos.canX);
+  $('#trackpad').classList.toggle('lock-y', !pos.canY);
 }
 
 $('#adjZoom').addEventListener('input', () => {
@@ -816,9 +838,9 @@ for (const axis of ['X', 'Y'] as const) {
     const st = selectedTile();
     if (!st) return;
     const { p, t } = st;
-    const c = currentView(p, t).c;
+    const pos = getPos(p, t);
     const v = Number($<HTMLInputElement>(`#adj${axis}`).value);
-    panTo(p, t, axis === 'X' ? v : c.x, axis === 'Y' ? v : c.y, p.zoom);
+    setPos(p, t, axis === 'X' ? v : pos.u, axis === 'Y' ? v : pos.v);
     renderAdjPanel();
     render();
   });
@@ -844,10 +866,12 @@ $$('[data-step]').forEach((b) =>
   }),
 );
 
-// トラックパッド（スマホ）：なぞった方向へ写真が動く
+// トラックパッド（スマホ）：点が指の動きに付いていく。サイズは変えない
+/** 指の移動量に対する点の移動量（1 未満で細かく動かせる） */
+const PAD_GAIN = 0.4;
 (() => {
   const pad = $('#trackpad');
-  let st: { pid: number; x: number; y: number; c: { x: number; y: number }; crop: Crop; zoom: number } | null = null;
+  let st: { pid: number; x: number; y: number; u: number; v: number } | null = null;
   pad.addEventListener('pointerdown', (e) => {
     const s = selectedTile();
     if (!s) return;
@@ -856,8 +880,8 @@ $$('[data-step]').forEach((b) =>
     } catch {
       /* 合成イベントなど */
     }
-    const v = currentView(s.p, s.t);
-    st = { pid: e.pointerId, x: e.clientX, y: e.clientY, c: v.c, crop: v.crop, zoom: s.p.zoom };
+    const pos = getPos(s.p, s.t);
+    st = { pid: e.pointerId, x: e.clientX, y: e.clientY, u: pos.u, v: pos.v };
     pad.classList.add('active');
   });
   pad.addEventListener('pointermove', (e) => {
@@ -865,10 +889,20 @@ $$('[data-step]').forEach((b) =>
     const s = selectedTile();
     if (!s) return;
     const r = pad.getBoundingClientRect();
-    // パッドの幅をなぞると、写真の見えている幅だけ動く
-    const du = ((e.clientX - st.x) / r.width) * (st.crop.sw / s.p.width);
-    const dv = ((e.clientY - st.y) / r.height) * (st.crop.sh / s.p.height);
-    panTo(s.p, s.t, st.c.x - du, st.c.y - dv, st.zoom);
+    // 指と同じ向きへ、指の移動の PAD_GAIN 倍だけ点が動く（端まで行ったら指の基準を付け直す）
+    let u = st.u + ((e.clientX - st.x) / r.width) * PAD_GAIN;
+    let v = st.v + ((e.clientY - st.y) / r.height) * PAD_GAIN;
+    if (u < 0 || u > 1) {
+      u = Math.min(1, Math.max(0, u));
+      st.u = u;
+      st.x = e.clientX;
+    }
+    if (v < 0 || v > 1) {
+      v = Math.min(1, Math.max(0, v));
+      st.v = v;
+      st.y = e.clientY;
+    }
+    setPos(s.p, s.t, u, v);
     renderAdjPanel();
     render();
   });
