@@ -536,7 +536,13 @@ export const LAYOUTS: LayoutDef[] = [
   { id: 'scatter', name: '散らし', build: scatter, usesSeed: true },
 ];
 
-export const getLayout = (id: string) => LAYOUTS.find((l) => l.id === id) ?? LAYOUTS[0];
+export const getLayout = (id: string): LayoutDef => {
+  if (id.startsWith('custom:')) {
+    const c = getCustom(id.slice(7));
+    if (c) return customDef(c);
+  }
+  return LAYOUTS.find((l) => l.id === id) ?? LAYOUTS[0];
+};
 
 export function pointInTile(t: Tile, x: number, y: number) {
   const c = Math.cos(-t.rot), s = Math.sin(-t.rot);
@@ -548,4 +554,70 @@ export function pointInTile(t: Tile, x: number, y: number) {
     if (p[i].y > ly !== p[j].y > ly && lx < ((p[j].x - p[i].x) * (ly - p[i].y)) / (p[j].y - p[i].y) + p[i].x) inside = !inside;
   }
   return inside;
+}
+
+// ---------- カスタムレイアウト ----------
+
+/** 自分で作ったレイアウト。マスは外枠（余白の内側）を 0..1 とした凸多角形 */
+export interface CustomLayout {
+  id: string;
+  name: string;
+  cells: Pt[][];
+}
+
+const CUSTOM_KEY = 'photo-tile-maker:custom-layouts';
+let customs: CustomLayout[] = (() => {
+  try {
+    const v = JSON.parse(localStorage.getItem(CUSTOM_KEY) || '[]');
+    return Array.isArray(v) ? v.filter((c) => c && typeof c.id === 'string' && Array.isArray(c.cells)) : [];
+  } catch {
+    return [];
+  }
+})();
+function storeCustoms() {
+  try {
+    localStorage.setItem(CUSTOM_KEY, JSON.stringify(customs));
+  } catch {
+    /* 保存できない環境では、このページを開いている間だけ使える */
+  }
+}
+export const customLayouts = () => customs;
+export const getCustom = (id: string) => customs.find((c) => c.id === id) ?? null;
+export function saveCustom(c: CustomLayout) {
+  const i = customs.findIndex((x) => x.id === c.id);
+  if (i >= 0) customs[i] = c;
+  else customs.push(c);
+  storeCustoms();
+}
+export function deleteCustom(id: string) {
+  customs = customs.filter((c) => c.id !== id);
+  storeCustoms();
+}
+
+/** マス（0..1）を、余白とすき間を付けたタイルにする */
+export function cellsToTiles(cells: Pt[][], inp: Pick<LayoutInput, 'W' | 'H' | 'gap' | 'margin'>): Tile[] {
+  const { W, H, gap, margin } = inp;
+  const ox = margin - gap / 2, oy = margin - gap / 2;
+  const iw = W - ox * 2, ih = H - oy * 2;
+  return cells.map((cell, i) => {
+    const poly = cell.map((p) => ({ x: ox + p.x * iw, y: oy + p.y * ih }));
+    // 外枠に接する辺は余白の位置ちょうどになるよう、すき間の半分だけ縮める
+    return polyToTile(i, insetPoly(poly, gap / 2));
+  });
+}
+
+export function customDef(c: CustomLayout): LayoutDef {
+  return { id: `custom:${c.id}`, name: c.name, rounded: true, build: (inp) => cellsToTiles(c.cells, inp) };
+}
+
+/** 既定のレイアウトと自作のレイアウト */
+export const allLayouts = (): LayoutDef[] => [...LAYOUTS, ...customs.map(customDef)];
+
+/** 既存のレイアウトを、すき間・余白なしのマス（0..1）に直す（カスタム作成のひな形用） */
+export function layoutToCells(def: LayoutDef, aspects: number[], W: number, H: number, seed: number, columns: number): Pt[][] {
+  const ts = def.build({ W, H, aspects, gap: 0, margin: 0, columns: def.usesColumns ? columns : 0, seed, slant: 0 });
+  return ts.map((t) => {
+    const c = Math.cos(t.rot), s = Math.sin(t.rot);
+    return t.clip.map((p) => ({ x: (t.cx + p.x * c - p.y * s) / W, y: (t.cy + p.x * s + p.y * c) / H }));
+  });
 }
