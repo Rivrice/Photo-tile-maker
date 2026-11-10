@@ -3,7 +3,7 @@
 複数の写真（最大20枚）を、色・明るさ・構図を読み取りながら自動でタイル状に並べるアプリです。
 写真に撮影データ入りのフレームを付ける [Exif Frame Maker](https://rivrice.github.io/exif-frame-maker/) の姉妹アプリです。
 
-- **ブラウザ版**：https://rivrice.github.io/photo-tile-maker/
+- **ブラウザ版**：https://rivrice.github.io/Photo-tile-maker/
 - **Android版**：[Releases](https://github.com/Rivrice/Photo-tile-maker/releases/latest) から `photo-tile-maker.apk` をダウンロード
 
 ## できること
