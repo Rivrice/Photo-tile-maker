@@ -57,6 +57,7 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v18M3 12h18M12 3 9.5 5.5M12 3l2.5 2.5M12 21l-2.5-2.5M12 21l2.5-2.5M3 12l2.5-2.5M3 12l2.5 2.5M21 12l-2.5-2.5M21 12l-2.5 2.5"/></svg>位置調整
             </button>
           </div>
+          <button class="icon-btn" id="fullBtn" aria-label="全体を全画面で表示" title="全画面で見る"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
         </div>
         <div class="stage-inner" id="stage">
           <canvas id="preview"></canvas>
@@ -102,20 +103,36 @@
         </details>
 
         <details open data-tab="sort">
-          <summary>並べ替え</summary>
+          <summary>グラデーション配置</summary>
+          <div class="subhead first">並べる基準</div>
+          <div class="grad-keys" id="gradKey">
+            <button data-key="bright"><i class="sw-bright"></i>明るさ</button>
+            <button data-key="hue"><i class="sw-hue"></i>色相（虹色）</button>
+            <button data-key="sat"><i class="sw-sat"></i>鮮やかさ</button>
+            <button data-key="tone"><i class="sw-tone"></i>色の近さ</button>
+          </div>
+          <div class="subhead">方向</div>
+          <div class="grad-dirs" id="gradDir">
+            <button data-dir="lr" aria-label="左から右"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h15M14 7l5 5-5 5"/></svg>左→右</button>
+            <button data-dir="tb" aria-label="上から下"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v15M7 14l5 5 5-5"/></svg>上→下</button>
+            <button data-dir="tlbr" aria-label="左上から右下"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5l13 13M18 10v8h-8"/></svg>斜め↘</button>
+            <button data-dir="bltr" aria-label="左下から右上"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19 18 6M10 6h8v8"/></svg>斜め↗</button>
+            <button data-dir="radial" aria-label="中心から外へ"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="2.2"/><circle cx="12" cy="12" r="6.5" opacity=".6"/><circle cx="12" cy="12" r="10" opacity=".3"/></svg>中心から</button>
+            <button id="gradRev" class="rev" aria-label="向きを反転"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4 3 8l4 4M3 8h13M17 20l4-4-4-4M21 16H8"/></svg>反転</button>
+          </div>
+          <p class="hint" id="gradHint"></p>
+        </details>
+
+        <details open data-tab="sort">
+          <summary>その他の並べ替え</summary>
           <div class="sort-grid" id="sorts">
-            <button data-sort="bright"><i class="sw-bright"></i>明るい順</button>
-            <button data-sort="dark"><i class="sw-dark"></i>暗い順</button>
-            <button data-sort="hue"><i class="sw-hue"></i>色相（虹色）</button>
-            <button data-sort="sat"><i class="sw-sat"></i>鮮やかな順</button>
-            <button data-sort="tone"><i class="sw-tone"></i>グラデーション</button>
             <button data-sort="comp"><i class="sw-comp"></i>構図ごと</button>
             <button data-sort="date"><i class="sw-date"></i>撮影日時</button>
             <button data-sort="name"><i class="sw-name"></i>ファイル名</button>
             <button data-sort="shuffle"><i class="sw-shuffle"></i>シャッフル</button>
             <button data-sort="reverse"><i class="sw-reverse"></i>逆順</button>
           </div>
-          <p class="hint">プレビューの写真をドラッグして、別の写真の上で離すと入れ替わります。</p>
+          <p class="hint">プレビューの写真をドラッグして、別の写真の上で離すと入れ替わります。長押しで全画面表示、2本指で写真を拡大できます。</p>
         </details>
 
         <details open data-tab="sort">
@@ -166,7 +183,12 @@
             </div>
             <div class="field">
               <span>ズーム <output id="selZoomOut"></output></span>
-              <input id="selZoom" type="range" min="1" max="3" step="0.01" />
+              <input id="selZoom" type="range" min="1" max="4" step="0.01" />
+            </div>
+            <div class="sel-rotate">
+              <button class="btn-sm" id="selRotL"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v6h6"/><path d="M4.5 10A8 8 0 1 1 6 16.5"/></svg>左に回転</button>
+              <button class="btn-sm" id="selRotR"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 4v6h-6"/><path d="M19.5 10A8 8 0 1 0 18 16.5"/></svg>右に回転</button>
+              <button class="btn-sm" id="selView"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>全画面</button>
             </div>
             <div class="sel-actions">
               <button class="btn-sm" id="selReset">位置を自動に戻す</button>
@@ -288,6 +310,12 @@
 
     <div class="drag-ghost" id="ghost" hidden><img alt="" /></div>
     <div class="toast" id="toast" hidden></div>
+    <div class="viewer" id="viewer" hidden>
+      <canvas id="viewerCanvas"></canvas>
+      <div class="viewer-title" id="viewerTitle"></div>
+      <button class="viewer-close" id="viewerClose" aria-label="閉じる">✕</button>
+      <p class="viewer-hint">2本指・ダブルタップで拡大</p>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

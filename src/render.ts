@@ -55,171 +55,210 @@ export function roundedPath(ctx: CanvasRenderingContext2D | Path2D, pts: Pt[], r
   ctx.closePath();
 }
 
-/** 黄金スパイラル（単位正方形内）を構成する1/4楕円 */
-function goldenArcs(): { c: Pt; rx: number; ry: number; a0: number }[] {
-  let x0 = 0, y0 = 0, x1 = 1, y1 = 1;
-  const arcs: { c: Pt; rx: number; ry: number; a0: number }[] = [];
-  for (let i = 0; i < 10; i++) {
-    const w = x1 - x0, h = y1 - y0;
-    switch (i % 4) {
-      case 0: {
-        const s = w * PHI;
-        arcs.push({ c: { x: x0 + s, y: y1 }, rx: s, ry: h, a0: Math.PI });
-        x0 += s;
-        break;
-      }
-      case 1: {
-        const s = h * PHI;
-        arcs.push({ c: { x: x0, y: y0 + s }, rx: w, ry: s, a0: Math.PI * 1.5 });
-        y0 += s;
-        break;
-      }
-      case 2: {
-        const s = w * PHI;
-        arcs.push({ c: { x: x1 - s, y: y0 }, rx: s, ry: h, a0: 0 });
-        x1 -= s;
-        break;
-      }
-      default: {
-        const s = h * PHI;
-        arcs.push({ c: { x: x1, y: y1 - s }, rx: w, ry: s, a0: Math.PI * 0.5 });
-        y1 -= s;
-      }
-    }
-  }
-  return arcs;
+/** 写真上の正規化座標（0..1） */
+interface Rect {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
 }
-const GOLDEN = goldenArcs();
-/** 3回切り出した後に残る長方形（単位正方形内） */
-const GOLDEN_REST = (() => {
-  const a = GOLDEN[2];
-  // 右の扇形を切った後：左上〜下端、上端は2つ目の扇形の下
-  const top = GOLDEN[1].c.y;
-  return { x0: GOLDEN[1].c.x, y0: top, x1: a.c.x, y1: 1 };
-})();
-// このスパイラルの目（収束点）
-const GOLDEN_EYE = (() => {
-  const last = GOLDEN[GOLDEN.length - 1];
-  return { x: last.c.x, y: last.c.y };
-})();
+
+/**
+ * 黄金分割の補助線：長い辺を 0.382 : 0.618 で区切る操作を、被写体のある側へ繰り返す。
+ * 区切り線は被写体に近い方の分割点を使うので、線が被写体へ向かって収束していく。
+ */
+function goldenCuts(pw: number, ph: number, f: Pt, depth = 6) {
+  let r = { x0: 0, y0: 0, x1: pw, y1: ph };
+  const fx = f.x * pw, fy = f.y * ph;
+  const lines: [Pt, Pt][] = [];
+  const rects: Rect[] = [];
+  for (let i = 0; i < depth; i++) {
+    const rw = r.x1 - r.x0, rh = r.y1 - r.y0;
+    if (rw >= rh) {
+      const c1 = r.x0 + rw * (1 - PHI), c2 = r.x0 + rw * PHI;
+      const c = Math.abs(fx - c1) <= Math.abs(fx - c2) ? c1 : c2;
+      lines.push([{ x: c / pw, y: r.y0 / ph }, { x: c / pw, y: r.y1 / ph }]);
+      r = fx < c ? { ...r, x1: c } : { ...r, x0: c };
+    } else {
+      const c1 = r.y0 + rh * (1 - PHI), c2 = r.y0 + rh * PHI;
+      const c = Math.abs(fy - c1) <= Math.abs(fy - c2) ? c1 : c2;
+      lines.push([{ x: r.x0 / pw, y: c / ph }, { x: r.x1 / pw, y: c / ph }]);
+      r = fy < c ? { ...r, y1: c } : { ...r, y0: c };
+    }
+    rects.push({ x0: r.x0 / pw, y0: r.y0 / ph, x1: r.x1 / pw, y1: r.y1 / ph });
+  }
+  return { lines, rects };
+}
 
 interface ShapeCtx {
-  x: CanvasRenderingContext2D;
   w: number;
   h: number;
   /** 写真上の正規化座標 → タイルのローカル座標 */
   map: (u: number, v: number) => Pt;
+  /** 写真の短辺を 1 とした長さ → タイルのローカル座標での長さ */
+  len: (l: number) => number;
   p: PhotoItem;
   type: CompType;
 }
 
-/** 構図に合わせた図形のパスを作る（mode: 線 or 切り抜き） */
-function shapePath(s: ShapeCtx, cutout: boolean): Path2D {
-  const { w, h, p, type } = s;
-  const path = new Path2D();
-  const F = s.map(p.comp.focus.x, p.comp.focus.y);
-  const m = Math.min(w, h);
-  const L = -w / 2, T = -h / 2;
+interface ShapeSet {
+  /** 主となる線（アクセントでは太く描く） */
+  main: Path2D;
+  /** 補助の線（細く描く） */
+  sub: Path2D;
+  /** 構図の要となる点 */
+  dots: Pt[];
+  /** 切り抜きの形 */
+  cut: Path2D;
+}
+
+/** 構図の要の点（三分割の交点など）。すべて元画像を基準に決める */
+function keyPoint(p: PhotoItem, type: CompType): Pt {
+  const f = p.comp.focus;
+  if (type === 'thirds' || type === 'golden') {
+    const a = type === 'thirds' ? 1 / 3 : 1 - PHI;
+    const pts = [a, 1 - a].flatMap((x) => [a, 1 - a].map((y) => ({ x, y })));
+    const asp = p.height / p.width;
+    return pts.reduce((b, c) => (Math.hypot(c.x - f.x, (c.y - f.y) * asp) < Math.hypot(b.x - f.x, (b.y - f.y) * asp) ? c : b));
+  }
+  return f;
+}
+
+/**
+ * 構図に合わせた図形。座標はすべて元画像の上で決めてからタイルへ写すので、
+ * どのタイルに入れても、写真との位置関係と図形の比率は変わらない。
+ */
+function shapeSet(s: ShapeCtx): ShapeSet {
+  const { p, type, map, len } = s;
+  const main = new Path2D(), sub = new Path2D(), cut = new Path2D();
+  const dots: Pt[] = [];
+  const line = (path: Path2D, a: Pt, b: Pt) => {
+    const A = map(a.x, a.y), B = map(b.x, b.y);
+    path.moveTo(A.x, A.y);
+    path.lineTo(B.x, B.y);
+  };
+  const circle = (path: Path2D, c: Pt, r: number) => {
+    const C = map(c.x, c.y);
+    path.moveTo(C.x + len(r), C.y);
+    path.arc(C.x, C.y, len(r), 0, Math.PI * 2);
+  };
+  const short = Math.min(p.width, p.height);
+  // 正規化座標の長さ（短辺比）を、u・v 方向の比率に直す
+  const du = short / p.width, dv = short / p.height;
+  const f = p.comp.focus;
   switch (type) {
     case 'center': {
-      const r = Math.max(0.2, Math.min(0.44, p.comp.spread * 1.3)) * m;
-      path.arc(F.x, F.y, r, 0, Math.PI * 2);
+      const r = Math.max(0.16, Math.min(0.42, p.comp.spread * 1.35));
+      circle(main, f, r);
+      circle(sub, f, r * 1.18);
+      dots.push(f);
+      circle(cut, f, r);
       break;
     }
-    case 'thirds': {
-      const pts = [1 / 3, 2 / 3].flatMap((a) => [1 / 3, 2 / 3].map((b) => ({ x: L + a * w, y: T + b * h })));
-      const q = pts.reduce((best, c) => (Math.hypot(c.x - F.x, c.y - F.y) < Math.hypot(best.x - F.x, best.y - F.y) ? c : best));
-      if (cutout) {
-        path.arc(q.x, q.y, m * 0.3, 0, Math.PI * 2);
-      } else {
-        for (const a of [1 / 3, 2 / 3]) {
-          path.moveTo(L + a * w, T);
-          path.lineTo(L + a * w, T + h);
-          path.moveTo(L, T + a * h);
-          path.lineTo(L + w, T + a * h);
-        }
-        path.moveTo(q.x + m * 0.07, q.y);
-        path.arc(q.x, q.y, m * 0.07, 0, Math.PI * 2);
-      }
-      break;
-    }
+    case 'thirds':
     case 'golden': {
-      // 目が被写体側に来るように反転
-      const fu = (F.x - L) / w, fv = (F.y - T) / h;
-      const flipX = fu < 0.5 !== GOLDEN_EYE.x < 0.5;
-      const flipY = fv < 0.5 !== GOLDEN_EYE.y < 0.5;
-      const P = (u: number, v: number) => ({ x: L + (flipX ? 1 - u : u) * w, y: T + (flipY ? 1 - v : v) * h });
-      if (cutout) {
-        // 外側の3つは扇形、その内側（目のまわり）はまとめて残す
-        const r = GOLDEN_REST;
-        const a = P(r.x0, r.y0), b = P(r.x1, r.y1);
-        path.rect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
-      }
-      (cutout ? GOLDEN.slice(0, 3) : GOLDEN).forEach((a, i) => {
-        const seg = 18;
-        const c = P(a.c.x, a.c.y);
-        if (cutout) path.moveTo(c.x, c.y);
-        for (let k = 0; k <= seg; k++) {
-          const t = a.a0 + (k / seg) * (Math.PI / 2);
-          const q = P(a.c.x + Math.cos(t) * a.rx, a.c.y + Math.sin(t) * a.ry);
-          if (k === 0 && !cutout && i === 0) path.moveTo(q.x, q.y);
-          else path.lineTo(q.x, q.y);
+      const k = keyPoint(p, type);
+      if (type === 'thirds') {
+        for (const a of [1 / 3, 2 / 3]) {
+          line(Math.abs(a - k.x) < 0.01 ? main : sub, { x: a, y: 0 }, { x: a, y: 1 });
+          line(Math.abs(a - k.y) < 0.01 ? main : sub, { x: 0, y: a }, { x: 1, y: a });
         }
-        if (cutout) path.closePath();
-      });
+        dots.push(k);
+        circle(cut, k, 0.25);
+      } else {
+        // 黄金分割の区切り線（直線のみ）。最初の2本を主線、残りを補助線に
+        const g = goldenCuts(p.width, p.height, k);
+        g.lines.forEach(([a, b], i) => line(i < 2 ? main : sub, a, b));
+        dots.push(k);
+        // 切り抜き：要の点を中心にした黄金長方形（1 : 1.618、写真と同じ向き）
+        const C = map(k.x, k.y);
+        const a = len(0.27), b = a / PHI;
+        const [hw, hh] = p.width >= p.height ? [b, a] : [a, b];
+        cut.rect(C.x - hw, C.y - hh, hw * 2, hh * 2);
+      }
       break;
     }
     case 'diagonal': {
+      // 検出した線があればそれを、なければ画像の対角線を使う
       const d = p.comp.diag ?? 1;
-      const a = d === 1 ? { x: L, y: T } : { x: L + w, y: T };
-      const b = d === 1 ? { x: L + w, y: T + h } : { x: L, y: T + h };
-      if (cutout) {
-        // 被写体がある側の三角形
-        const side = (b.x - a.x) * (F.y - a.y) - (b.y - a.y) * (F.x - a.x);
-        const c = d === 1 ? (side > 0 ? { x: L, y: T + h } : { x: L + w, y: T }) : side > 0 ? { x: L + w, y: T + h } : { x: L, y: T };
-        path.moveTo(a.x, a.y);
-        path.lineTo(b.x, b.y);
-        path.lineTo(c.x, c.y);
-        path.closePath();
-      } else {
-        path.moveTo(a.x, a.y);
-        path.lineTo(b.x, b.y);
+      const seg = p.comp.line ?? (d === 1 ? { a: { x: 0, y: 0 }, b: { x: 1, y: 1 } } : { a: { x: 1, y: 0 }, b: { x: 0, y: 1 } });
+      line(main, seg.a, seg.b);
+      // 平行な補助線（対角線を挟んで等間隔）
+      const nx = -(seg.b.y - seg.a.y) * p.height, ny = (seg.b.x - seg.a.x) * p.width;
+      const nl = Math.hypot(nx, ny) || 1;
+      for (const o of [-0.12, 0.12]) {
+        const ox = ((nx / nl) * o * short) / p.width, oy = ((ny / nl) * o * short) / p.height;
+        line(sub, { x: seg.a.x + ox, y: seg.a.y + oy }, { x: seg.b.x + ox, y: seg.b.y + oy });
       }
+      // 切り抜き：被写体のある側の三角形（線の両端と、その側の角）
+      const side = (q: Pt) => (seg.b.x - seg.a.x) * (q.y - seg.a.y) * p.height - (seg.b.y - seg.a.y) * (q.x - seg.a.x) * p.width;
+      const sf = side(f) || 1;
+      const corners = [
+        { x: 0, y: 0 },
+        { x: 1, y: 0 },
+        { x: 1, y: 1 },
+        { x: 0, y: 1 },
+      ].filter((c) => side(c) * sf > 0);
+      // 線の端から角をたどって多角形を作る
+      const poly = [seg.a, seg.b, ...orderCorners(seg.b, seg.a, corners)];
+      poly.forEach((q, i) => {
+        const Q = map(q.x, q.y);
+        if (i) cut.lineTo(Q.x, Q.y);
+        else cut.moveTo(Q.x, Q.y);
+      });
+      cut.closePath();
       break;
     }
     case 'horizon': {
-      const y = s.map(0, p.comp.horizon ?? 0.5).y;
-      if (cutout) {
-        const up = y - T, down = T + h - y;
-        const r = Math.min(w * 0.42, Math.max(up, down) * 0.92);
-        if (up >= down) path.arc(F.x, y, r, Math.PI, Math.PI * 2);
-        else path.arc(F.x, y, r, 0, Math.PI);
-        path.closePath();
-      } else {
-        path.moveTo(L, y);
-        path.lineTo(L + w, y);
-      }
+      const y = p.comp.horizon ?? f.y;
+      line(main, { x: 0, y }, { x: 1, y });
+      // 上下に、水平線との間隔をそろえた補助線
+      for (const o of [-0.08, 0.08]) line(sub, { x: 0, y: y + o * dv }, { x: 1, y: y + o * dv });
+      // 切り抜き：水平線から昇る半円（空の広い側へ）
+      const up = y, down = 1 - y;
+      const r = Math.min(0.34, Math.max(up, down) * (p.height / short) * 0.85);
+      const C = map(f.x, y);
+      const R = len(r);
+      if (up >= down) cut.arc(C.x, C.y, R, Math.PI, Math.PI * 2);
+      else cut.arc(C.x, C.y, R, 0, Math.PI);
+      cut.closePath();
+      dots.push({ x: f.x, y });
       break;
     }
     case 'symmetry': {
-      const x = F.x;
-      if (cutout) {
-        // アーチ窓
-        const aw = Math.min(w * 0.5, h * 0.5) / 2;
-        const top = T + h * 0.14 + aw;
-        path.moveTo(x - aw, T + h * 0.9);
-        path.lineTo(x - aw, top);
-        path.arc(x, top, aw, Math.PI, Math.PI * 2);
-        path.lineTo(x + aw, T + h * 0.9);
-        path.closePath();
-      } else {
-        path.moveTo(x, T);
-        path.lineTo(x, T + h);
-      }
+      const x = p.comp.axis ?? f.x;
+      line(main, { x, y: 0 }, { x, y: 1 });
+      for (const o of [-0.18, 0.18]) line(sub, { x: x + o * du, y: 0 }, { x: x + o * du, y: 1 });
+      // 切り抜き：軸を中心にしたアーチ窓
+      const aw = 0.22; // 半幅（短辺比）
+      const top = 0.1 + aw * dv, bottom = 0.92;
+      const L = map(x - aw * du, bottom), R = map(x + aw * du, bottom), T = map(x, top);
+      cut.moveTo(L.x, L.y);
+      cut.lineTo(L.x, T.y);
+      cut.arc(T.x, T.y, len(aw), Math.PI, Math.PI * 2);
+      cut.lineTo(R.x, R.y);
+      cut.closePath();
       break;
     }
   }
-  return path;
+  return { main, sub, dots: dots.map((d) => map(d.x, d.y)), cut };
+}
+
+/** 線の端 from から、同じ側の角を外周に沿ってたどり、端 to に戻る順に並べる */
+function orderCorners(from: Pt, to: Pt, corners: Pt[]): Pt[] {
+  // 外周上の位置（0..4）：上辺→右辺→下辺→左辺
+  const pos = (q: Pt) => {
+    const e = 1e-6;
+    if (q.y <= e) return q.x;
+    if (q.x >= 1 - e) return 1 + q.y;
+    if (q.y >= 1 - e) return 2 + (1 - q.x);
+    return 3 + (1 - q.y);
+  };
+  const a = pos(from), b = pos(to);
+  const fwd = (q: Pt) => (pos(q) - a + 4) % 4;
+  const span = (b - a + 4) % 4;
+  const along = corners.every((c) => fwd(c) < span);
+  return [...corners].sort((c1, c2) => (along ? fwd(c1) - fwd(c2) : fwd(c2) - fwd(c1)));
 }
 
 export interface SceneOptions {
@@ -278,39 +317,67 @@ export function drawScene(x: CanvasRenderingContext2D, o: SceneOptions) {
       x: ((u * p.width - crop.sx) / crop.sw - 0.5) * w,
       y: ((v * p.height - crop.sy) / crop.sh - 0.5) * h,
     });
-    const sctx: ShapeCtx | null = type === 'none' ? null : { x, w, h, map, p, type };
+    // 写真の短辺（正規化長 1）→ タイル上の長さ
+    const len = (l: number) => ((l * Math.min(p.width, p.height)) / crop.sw) * w;
+    const shapes = type === 'none' || st.overlay === 'none' ? null : shapeSet({ w, h, map, len, p, type });
 
+    const { img, crop: c2 } = o.image(t, p, crop, w, h);
     x.save();
     x.clip(tilePath);
-    if (cutout && sctx) {
-      // 切り抜きの外側は写真の色を薄く敷く
-      const [r, g, b] = p.stats.avg;
-      x.fillStyle = `rgba(${r | 0},${g | 0},${b | 0},.28)`;
-      x.fillRect(-w / 2, -h / 2, w, h);
-      x.clip(shapePath(sctx, true));
-    }
-    const { img, crop: c2 } = o.image(t, p, crop, w, h);
     x.imageSmoothingQuality = 'high';
     x.globalAlpha = o.dragging === t.idx ? 0.35 : 1;
     x.drawImage(img, c2.sx, c2.sy, c2.sw, c2.sh, -w / 2, -h / 2, w, h);
     x.globalAlpha = 1;
+    if (cutout && shapes) {
+      // 切り抜きの外側は、写真を背景色で薄く覆う（紙に窓を開けたような見た目）
+      const outside = new Path2D();
+      outside.rect(-w / 2 - 1, -h / 2 - 1, w + 2, h + 2);
+      outside.addPath(shapes.cut);
+      x.fillStyle = st.bg;
+      x.globalAlpha = 0.84;
+      x.fill(outside, 'evenodd');
+      x.globalAlpha = 1;
+      // 窓の縁に細い線
+      x.strokeStyle = st.overlayColor;
+      x.globalAlpha = 0.9;
+      x.lineWidth = 1.5 * unit;
+      x.lineJoin = 'round';
+      x.stroke(shapes.cut);
+      x.globalAlpha = 1;
+    }
     x.restore();
 
     // 構図の図形（線）
-    if (sctx && (st.overlay === 'guide' || st.overlay === 'accent')) {
+    if (shapes && (st.overlay === 'guide' || st.overlay === 'accent')) {
       x.save();
       x.clip(tilePath);
       const accent = st.overlay === 'accent';
       x.strokeStyle = st.overlayColor;
-      x.globalAlpha = accent ? 0.95 : 0.75;
-      x.lineWidth = (accent ? 6 : 1.6) * unit;
+      x.fillStyle = st.overlayColor;
       x.lineCap = 'round';
       x.lineJoin = 'round';
       if (!accent) {
-        x.shadowColor = 'rgba(0,0,0,.35)';
-        x.shadowBlur = 3 * unit;
+        // 細い線＋ごく弱い影で、どんな写真の上でも読めるように
+        x.shadowColor = 'rgba(0,0,0,.28)';
+        x.shadowBlur = 2 * unit;
       }
-      x.stroke(shapePath(sctx, false));
+      x.globalAlpha = accent ? 0.5 : 0.55;
+      x.lineWidth = (accent ? 1.4 : 1) * unit;
+      x.stroke(shapes.sub);
+      x.globalAlpha = accent ? 0.95 : 0.9;
+      x.lineWidth = (accent ? 3.2 : 1.3) * unit;
+      x.stroke(shapes.main);
+      for (const d of shapes.dots) {
+        x.beginPath();
+        x.arc(d.x, d.y, (accent ? 5 : 3) * unit, 0, Math.PI * 2);
+        x.fill();
+        if (!accent) {
+          x.beginPath();
+          x.arc(d.x, d.y, 9 * unit, 0, Math.PI * 2);
+          x.lineWidth = 1 * unit;
+          x.stroke();
+        }
+      }
       x.restore();
     }
 

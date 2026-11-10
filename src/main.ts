@@ -4,7 +4,7 @@ import '@fontsource/inter/700.css';
 import './style.css';
 import { COMP_LABELS, rgbToHsl } from './analyze';
 import { LAYOUTS, getLayout, pointInTile } from './layouts';
-import { ACCEPT, MAX_PHOTOS, extractRegion, loadPhoto, makeSamples } from './photos';
+import { ACCEPT, MAX_PHOTOS, extractRegion, loadPhoto, makeSamples, rotatePhoto } from './photos';
 import { IS_IOS, canvasToBlob, cropFor, drawScene, effectiveComp, type Crop } from './render';
 import { IS_NATIVE, nativeSave, nativeShare, onBackButton } from './native';
 import type { CompType, OverlayMode, PhotoItem, Settings, Tile } from './types';
@@ -29,6 +29,9 @@ const DEFAULTS: Settings = {
   format: 'image/jpeg',
   quality: 0.92,
   outEdge: 2048,
+  gradKey: 'bright',
+  gradDir: 'lr',
+  gradRev: false,
 };
 
 function loadSettings(): Settings {
@@ -120,6 +123,10 @@ function render() {
 
 function draw() {
   const items = list();
+  if (gradActive && gradSig !== layoutSig()) {
+    applyGradient();
+    if (!usingSamples()) renderList();
+  }
   tiles = computeTiles(items);
   const box = stage.getBoundingClientRect();
   const pad = 2;
@@ -369,6 +376,8 @@ function removePhoto(id: string) {
     }
     const from = photos.findIndex((p) => p.id === s.id);
     if (from < 0 || s.insert < 0) return;
+    gradActive = null;
+    syncGradUI();
     const [item] = photos.splice(from, 1);
     const to = s.insert > from ? s.insert - 1 : s.insert;
     photos.splice(to, 0, item);
@@ -391,39 +400,129 @@ function tileAt(x: number, y: number): Tile | null {
   return null;
 }
 
+const MAX_ZOOM = 4;
+
+/** 写真の中心位置 (cx, cy) と倍率 z が、タイル (w×h) に収まる範囲になるよう調整する */
+function clampView(p: PhotoItem, t: Tile, cx: number, cy: number, z: number) {
+  const s1 = Math.max(t.w / p.width, t.h / p.height);
+  const sw1 = Math.min(1, t.w / s1 / p.width), sh1 = Math.min(1, t.h / s1 / p.height); // 倍率1のときの見える幅（0..1）
+  z = Math.min(MAX_ZOOM, Math.max(1, z));
+  const hw = sw1 / z / 2, hh = sh1 / z / 2;
+  return { x: Math.min(1 - hw, Math.max(hw, cx)), y: Math.min(1 - hh, Math.max(hh, cy)), z };
+}
+
+/** 位置調整：目標の中心へ動かす。端で動かせない方向は、動かせるところまで自動で拡大する */
+function panTo(p: PhotoItem, t: Tile, cx: number, cy: number, minZoom: number) {
+  const s1 = Math.max(t.w / p.width, t.h / p.height);
+  const sw1 = Math.min(1, t.w / s1 / p.width), sh1 = Math.min(1, t.h / s1 / p.height);
+  const room = (c: number) => Math.max(0.02, 2 * Math.min(c, 1 - c));
+  const need = Math.max(minZoom, sw1 / room(cx), sh1 / room(cy));
+  const v = clampView(p, t, cx, cy, need);
+  p.pan = { x: v.x, y: v.y };
+  p.zoom = v.z;
+}
+
 (() => {
+  type Pointer = { x: number; y: number };
+  const pts = new Map<number, Pointer>();
   let st: {
     tile: Tile;
     pid: number;
     x: number;
     y: number;
     active: boolean;
+    timer: number;
     startPan?: { x: number; y: number };
+    startZoom?: number;
     crop?: Crop;
   } | null = null;
+  let pinch: { tile: Tile; d0: number; z0: number; mid0: Pointer; c0: { x: number; y: number }; crop: Crop } | null = null;
   const ghost = $('#ghost');
 
+  const cancelDrag = () => {
+    if (!st) return;
+    clearTimeout(st.timer);
+    st = null;
+    ghost.hidden = true;
+    document.body.classList.remove('dragging');
+    if (dragState) {
+      dragState = null;
+      render();
+    }
+  };
+  const viewOf = (p: PhotoItem, t: Tile) => {
+    const crop = cropFor(p, t.w, t.h, settings.smartCrop);
+    return { crop, c: { x: (crop.sx + crop.sw / 2) / p.width, y: (crop.sy + crop.sh / 2) / p.height } };
+  };
+
   preview.addEventListener('pointerdown', (e) => {
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    try {
+      preview.setPointerCapture(e.pointerId);
+    } catch {
+      /* 合成イベントなど */
+    }
+    // 2本目の指：ピンチで拡大・縮小（写真をタイルの中でズーム）
+    if (pts.size === 2) {
+      const tile = st?.tile ?? null;
+      cancelDrag();
+      const [a, b] = [...pts.values()];
+      const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      const r = preview.getBoundingClientRect();
+      const t = tile ?? tileAt(((mid.x - r.left) / r.width) * dims.W, ((mid.y - r.top) / r.height) * dims.H);
+      if (!t) return;
+      const p = list()[t.idx];
+      const v = viewOf(p, t);
+      pinch = { tile: t, d0: Math.hypot(a.x - b.x, a.y - b.y) || 1, z0: p.zoom, mid0: mid, c0: v.c, crop: v.crop };
+      if (p.id !== selectedId) select(p.id);
+      return;
+    }
+    if (pts.size > 2 || pinch) return;
     const pt = toLayout(e);
     const t = tileAt(pt.x, pt.y);
     if (!t) {
       if (selectedId) select('');
       return;
     }
-    preview.setPointerCapture(e.pointerId);
-    st = { tile: t, pid: e.pointerId, x: e.clientX, y: e.clientY, active: false };
+    st = { tile: t, pid: e.pointerId, x: e.clientX, y: e.clientY, active: false, timer: 0 };
+    // 長押しで全画面表示
+    st.timer = window.setTimeout(() => {
+      if (!st || st.active || pinch) return;
+      const p = list()[st.tile.idx];
+      cancelDrag();
+      if (p) openPhotoViewer(p);
+    }, 550);
     if (mode === 'pan') {
       const p = list()[t.idx];
-      const crop = cropFor(p, t.w, t.h, settings.smartCrop);
-      st.crop = crop;
-      st.startPan = { x: (crop.sx + crop.sw / 2) / p.width, y: (crop.sy + crop.sh / 2) / p.height };
+      const v = viewOf(p, t);
+      st.crop = v.crop;
+      st.startPan = v.c;
+      st.startZoom = p.zoom;
       if (p.id !== selectedId) select(p.id);
     }
   });
   preview.addEventListener('pointermove', (e) => {
+    if (pts.has(e.pointerId)) pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pinch && pts.size >= 2) {
+      const [a, b] = [...pts.values()];
+      const d = Math.hypot(a.x - b.x, a.y - b.y);
+      const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      const p = list()[pinch.tile.idx];
+      const r = preview.getBoundingClientRect();
+      // 2本指の中点の移動で位置も動かす
+      const du = ((mid.x - pinch.mid0.x) / r.width) * dims.W, dv = ((mid.y - pinch.mid0.y) / r.height) * dims.H;
+      const z = pinch.z0 * (d / pinch.d0);
+      const v = clampView(p, pinch.tile, pinch.c0.x - (du / pinch.tile.w) * (pinch.crop.sw / p.width), pinch.c0.y - (dv / pinch.tile.h) * (pinch.crop.sh / p.height), z);
+      p.zoom = v.z;
+      p.pan = { x: v.x, y: v.y };
+      renderSelPanel();
+      render();
+      return;
+    }
     if (!st || e.pointerId !== st.pid) return;
     const dist = Math.hypot(e.clientX - st.x, e.clientY - st.y);
-    if (!st.active && dist < 6) return;
+    if (!st.active && dist < 8) return;
+    clearTimeout(st.timer);
     const items = list();
     if (mode === 'pan') {
       st.active = true;
@@ -432,10 +531,8 @@ function tileAt(x: number, y: number): Tile | null {
       const du = ((e.clientX - st.x) / r.width) * dims.W; // レイアウト単位
       const dv = ((e.clientY - st.y) / r.height) * dims.H;
       const c = st.crop!;
-      p.pan = {
-        x: st.startPan!.x - (du / st.tile.w) * (c.sw / p.width),
-        y: st.startPan!.y - (dv / st.tile.h) * (c.sh / p.height),
-      };
+      panTo(p, st.tile, st.startPan!.x - (du / st.tile.w) * (c.sw / p.width), st.startPan!.y - (dv / st.tile.h) * (c.sh / p.height), st.startZoom!);
+      renderSelPanel();
       render();
       return;
     }
@@ -457,7 +554,13 @@ function tileAt(x: number, y: number): Tile | null {
     }
   });
   const end = (e: PointerEvent) => {
+    pts.delete(e.pointerId);
+    if (pinch) {
+      if (pts.size === 0) pinch = null;
+      return;
+    }
     if (!st || e.pointerId !== st.pid) return;
+    clearTimeout(st.timer);
     const s = st;
     st = null;
     ghost.hidden = true;
@@ -475,6 +578,7 @@ function tileAt(x: number, y: number): Tile | null {
       dragState = null;
       if (target != null) {
         [items[src], items[target]] = [items[target], items[src]];
+        gradActive = null;
         if (!usingSamples()) renderList();
         else renderLayoutThumbs();
       }
@@ -494,10 +598,144 @@ function tileAt(x: number, y: number): Tile | null {
       if (!t) return;
       e.preventDefault();
       const p = list()[t.idx];
-      p.zoom = Math.min(3, Math.max(1, p.zoom * Math.exp(-e.deltaY * 0.0015)));
+      const v0 = viewOf(p, t);
+      const v = clampView(p, t, v0.c.x, v0.c.y, p.zoom * Math.exp(-e.deltaY * 0.0015));
+      p.zoom = v.z;
+      p.pan = { x: v.x, y: v.y };
       if (p.id !== selectedId) select(p.id);
       else renderSelPanel();
       render();
+    },
+    { passive: false },
+  );
+})();
+
+// ---------- 全画面表示（長押し） ----------
+
+const viewer = $('#viewer');
+const viewerCanvas = $<HTMLCanvasElement>('#viewerCanvas');
+let vw = { s: 1, x: 0, y: 0, fit: 1 };
+function layoutViewer() {
+  const W = viewer.clientWidth, H = viewer.clientHeight;
+  const cw = viewerCanvas.width, ch = viewerCanvas.height;
+  vw.fit = Math.min((W - 24) / cw, (H - 24) / ch);
+  vw.s = vw.fit;
+  vw.x = (W - cw * vw.s) / 2;
+  vw.y = (H - ch * vw.s) / 2;
+  applyViewer();
+}
+function applyViewer() {
+  // 縮小しすぎ・はみ出しすぎを防ぐ
+  const W = viewer.clientWidth, H = viewer.clientHeight;
+  const cw = viewerCanvas.width * vw.s, ch = viewerCanvas.height * vw.s;
+  vw.x = cw <= W ? (W - cw) / 2 : Math.min(0, Math.max(W - cw, vw.x));
+  vw.y = ch <= H ? (H - ch) / 2 : Math.min(0, Math.max(H - ch, vw.y));
+  viewerCanvas.style.transform = `translate(${vw.x}px, ${vw.y}px) scale(${vw.s})`;
+}
+function openViewer(src: CanvasImageSource & { width: number; height: number }, title: string) {
+  viewerCanvas.width = src.width;
+  viewerCanvas.height = src.height;
+  viewerCanvas.getContext('2d')!.drawImage(src, 0, 0);
+  $('#viewerTitle').textContent = title;
+  viewer.hidden = false;
+  document.body.classList.add('viewing');
+  navigator.vibrate?.(10);
+  layoutViewer();
+}
+function openPhotoViewer(p: PhotoItem) {
+  openViewer(p.preview, p.name);
+}
+function openCollageViewer() {
+  // プレビュー用の縮小画像から、長辺 2048px で全体を描く
+  const items = list();
+  const k = 2048 / Math.max(dims.W, dims.H);
+  const c = document.createElement('canvas');
+  c.width = Math.round(dims.W * k);
+  c.height = Math.round(dims.H * k);
+  drawScene(c.getContext('2d')!, {
+    W: dims.W,
+    H: dims.H,
+    k,
+    tiles: computeTiles(items),
+    photos: items,
+    settings,
+    rounded: !!getLayout(settings.layout).rounded,
+    image: previewImage,
+  });
+  openViewer(c, '全体');
+  c.width = 0;
+}
+function closeViewer() {
+  viewer.hidden = true;
+  document.body.classList.remove('viewing');
+  viewerCanvas.width = 0;
+}
+$('#viewerClose').addEventListener('click', closeViewer);
+$('#fullBtn').addEventListener('click', openCollageViewer);
+window.addEventListener('resize', () => !viewer.hidden && layoutViewer());
+(() => {
+  const vp = new Map<number, { x: number; y: number }>();
+  let start: { s: number; x: number; y: number; d: number; mx: number; my: number } | null = null;
+  let lastTap = 0;
+  let moved = false;
+  const snapshot = () => {
+    const ps = [...vp.values()];
+    const mx = ps.reduce((a, p) => a + p.x, 0) / ps.length, my = ps.reduce((a, p) => a + p.y, 0) / ps.length;
+    const d = ps.length > 1 ? Math.hypot(ps[0].x - ps[1].x, ps[0].y - ps[1].y) : 0;
+    start = { s: vw.s, x: vw.x, y: vw.y, d, mx, my };
+  };
+  viewer.addEventListener('pointerdown', (e) => {
+    if ((e.target as HTMLElement).closest('button')) return;
+    viewer.setPointerCapture(e.pointerId);
+    vp.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    moved = false;
+    snapshot();
+  });
+  viewer.addEventListener('pointermove', (e) => {
+    if (!vp.has(e.pointerId) || !start) return;
+    vp.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const ps = [...vp.values()];
+    const mx = ps.reduce((a, p) => a + p.x, 0) / ps.length, my = ps.reduce((a, p) => a + p.y, 0) / ps.length;
+    if (Math.hypot(mx - start.mx, my - start.my) > 6) moved = true;
+    let s = start.s;
+    if (ps.length > 1 && start.d) {
+      s = Math.min(vw.fit * 8, Math.max(vw.fit, start.s * (Math.hypot(ps[0].x - ps[1].x, ps[0].y - ps[1].y) / start.d)));
+      moved = true;
+    }
+    // 指の中点を基準に拡大
+    vw.s = s;
+    vw.x = mx - ((start.mx - start.x) / start.s) * s;
+    vw.y = my - ((start.my - start.y) / start.s) * s;
+    applyViewer();
+  });
+  const up = (e: PointerEvent) => {
+    if (!vp.has(e.pointerId)) return;
+    vp.delete(e.pointerId);
+    if (vp.size) return snapshot();
+    start = null;
+    if (moved || e.type !== 'pointerup') return;
+    // ダブルタップで拡大・元に戻す
+    const now = Date.now();
+    if (now - lastTap < 300) {
+      lastTap = 0;
+      const z = vw.s > vw.fit * 1.05 ? vw.fit : vw.fit * 2.5;
+      vw.x = e.clientX - ((e.clientX - vw.x) / vw.s) * z;
+      vw.y = e.clientY - ((e.clientY - vw.y) / vw.s) * z;
+      vw.s = z;
+      applyViewer();
+    } else lastTap = now;
+  };
+  viewer.addEventListener('pointerup', up);
+  viewer.addEventListener('pointercancel', up);
+  viewer.addEventListener(
+    'wheel',
+    (e) => {
+      e.preventDefault();
+      const z = Math.min(vw.fit * 8, Math.max(vw.fit, vw.s * Math.exp(-e.deltaY * 0.002)));
+      vw.x = e.clientX - ((e.clientX - vw.x) / vw.s) * z;
+      vw.y = e.clientY - ((e.clientY - vw.y) / vw.s) * z;
+      vw.s = z;
+      applyViewer();
     },
     { passive: false },
   );
@@ -590,41 +828,8 @@ const COMP_ORDER: (CompType | 'none')[] = ['center', 'symmetry', 'thirds', 'gold
 
 function sortBy(kind: string) {
   const items = list();
-  const lum = (p: PhotoItem) => p.stats.lum;
-  // 無彩色に近い写真は色相順の最後に（明るさ順）
-  const hueKey = (p: PhotoItem) => (p.stats.sat < 0.08 ? 1000 + (1 - p.stats.lum) * 100 : (p.stats.hue + 340) % 360);
+  gradActive = null;
   switch (kind) {
-    case 'bright':
-      items.sort((a, b) => lum(b) - lum(a));
-      break;
-    case 'dark':
-      items.sort((a, b) => lum(a) - lum(b));
-      break;
-    case 'hue':
-      items.sort((a, b) => hueKey(a) - hueKey(b));
-      break;
-    case 'sat':
-      items.sort((a, b) => b.stats.sat - a.stats.sat);
-      break;
-    case 'tone': {
-      // 平均色の近いものを順につなぐ（最も明るい写真から出発）
-      const rest = [...items].sort((a, b) => lum(b) - lum(a));
-      const out = [rest.shift()!];
-      const dist = (a: PhotoItem, b: PhotoItem) => {
-        const [h1, s1, l1] = rgbToHsl(...a.stats.avg);
-        const [h2, s2, l2] = rgbToHsl(...b.stats.avg);
-        const dh = Math.min(Math.abs(h1 - h2), 360 - Math.abs(h1 - h2)) / 180;
-        return dh * Math.min(s1, s2) * 1.5 + Math.abs(s1 - s2) * 0.6 + Math.abs(l1 - l2) * 1.2;
-      };
-      while (rest.length) {
-        const last = out[out.length - 1];
-        let bi = 0;
-        for (let i = 1; i < rest.length; i++) if (dist(last, rest[i]) < dist(last, rest[bi])) bi = i;
-        out.push(rest.splice(bi, 1)[0]);
-      }
-      items.splice(0, items.length, ...out);
-      break;
-    }
     case 'comp':
       items.sort((a, b) => COMP_ORDER.indexOf(effectiveComp(a)) - COMP_ORDER.indexOf(effectiveComp(b)) || b.comp.score - a.comp.score);
       break;
@@ -644,15 +849,138 @@ function sortBy(kind: string) {
       items.reverse();
       break;
   }
+  syncGradUI();
   renderList();
   render();
 }
 $$('#sorts button').forEach((b) => b.addEventListener('click', () => sortBy(b.dataset.sort!)));
 
+// ---------- グラデーション配置 ----------
+// 写真を色や明るさの順に並べ、画面上の位置（方向）の順に割り当てる。
+// レイアウトによってタイルの番号と位置の関係はばらばらなので、位置で割り当てることで見た目がグラデーションになる。
+
+type GradKey = Settings['gradKey'];
+type GradDir = Settings['gradDir'];
+/** 適用中のグラデーション（手で並べ替えると解除） */
+let gradActive: { key: GradKey; dir: GradDir; rev: boolean } | null = null;
+let gradSig = '';
+
+function colorOrder(items: PhotoItem[], key: GradKey): PhotoItem[] {
+  const lum = (p: PhotoItem) => p.stats.lum;
+  switch (key) {
+    case 'bright':
+      return [...items].sort((a, b) => lum(b) - lum(a));
+    case 'sat':
+      return [...items].sort((a, b) => b.stats.sat - a.stats.sat || lum(b) - lum(a));
+    case 'hue': {
+      // 色みのある写真を色相順に。色相環のいちばん大きな切れ目から始めて、虹がつながるように
+      const chroma = items.filter((p) => p.stats.sat >= 0.08);
+      const gray = items.filter((p) => p.stats.sat < 0.08).sort((a, b) => lum(b) - lum(a));
+      chroma.sort((a, b) => a.stats.hue - b.stats.hue);
+      let cut = 0, gap = -1;
+      for (let i = 0; i < chroma.length; i++) {
+        const h1 = chroma[i].stats.hue, h0 = chroma[(i + chroma.length - 1) % chroma.length].stats.hue;
+        const g = chroma.length === 1 ? 360 : (h1 - h0 + 360) % 360;
+        if (g > gap) {
+          gap = g;
+          cut = i;
+        }
+      }
+      return [...chroma.slice(cut), ...chroma.slice(0, cut), ...gray];
+    }
+    case 'tone': {
+      // 平均色の近いものを順につなぐ（いちばん明るい写真から出発）
+      const rest = [...items].sort((a, b) => lum(b) - lum(a));
+      const out = [rest.shift()!];
+      const dist = (a: PhotoItem, b: PhotoItem) => {
+        const [h1, s1, l1] = rgbToHsl(...a.stats.avg);
+        const [h2, s2, l2] = rgbToHsl(...b.stats.avg);
+        const dh = Math.min(Math.abs(h1 - h2), 360 - Math.abs(h1 - h2)) / 180;
+        return dh * Math.min(s1, s2) * 1.5 + Math.abs(s1 - s2) * 0.6 + Math.abs(l1 - l2) * 1.2;
+      };
+      while (rest.length) {
+        const last = out[out.length - 1];
+        let bi = 0;
+        for (let i = 1; i < rest.length; i++) if (dist(last, rest[i]) < dist(last, rest[bi])) bi = i;
+        out.push(rest.splice(bi, 1)[0]);
+      }
+      return out;
+    }
+  }
+}
+
+/** タイルの位置を、選んだ方向に沿った値にする（小さいほど始点側） */
+function along(t: Tile, dir: GradDir) {
+  const u = t.cx / dims.W, v = t.cy / dims.H;
+  switch (dir) {
+    case 'lr':
+      return u + v * 0.08;
+    case 'tb':
+      return v + u * 0.08;
+    case 'tlbr':
+      return u + v;
+    case 'bltr':
+      return u + (1 - v);
+    case 'radial':
+      return Math.hypot((u - 0.5) * dims.W, (v - 0.5) * dims.H) / Math.max(dims.W, dims.H);
+  }
+}
+
+/** 配置が変わる設定のまとめ（変わったらグラデーションを掛け直す） */
+function layoutSig() {
+  return [settings.layout, settings.aspect, settings.columns, settings.seed, settings.gap, settings.margin, settings.slant, list().length].join('|');
+}
+
+function applyGradient() {
+  gradSig = layoutSig();
+  if (!gradActive) return;
+  const items = list();
+  if (items.length < 2) return;
+  const { key, dir, rev } = gradActive;
+  let order = colorOrder(items, key);
+  if (rev) order = order.reverse();
+  // タイルの形は写真の比率で変わることがあるので、落ち着くまで数回くり返す
+  for (let pass = 0; pass < 4; pass++) {
+    const ts = computeTiles(items);
+    const slots = [...ts].sort((a, b) => along(a, dir) - along(b, dir));
+    const next: PhotoItem[] = new Array(items.length);
+    slots.forEach((t, i) => (next[t.idx] = order[i]));
+    const same = next.every((p, i) => p === items[i]);
+    items.splice(0, items.length, ...next);
+    if (same) break;
+  }
+}
+
+function setGradient(key: GradKey, dir: GradDir, rev: boolean) {
+  settings.gradKey = key;
+  settings.gradDir = dir;
+  settings.gradRev = rev;
+  saveSettings();
+  gradActive = { key, dir, rev };
+  applyGradient();
+  syncGradUI();
+  if (!usingSamples()) renderList();
+  else renderLayoutThumbs();
+  render();
+}
+function syncGradUI() {
+  $$('#gradKey button').forEach((b) => b.classList.toggle('active', !!gradActive && b.dataset.key === settings.gradKey));
+  $$('#gradDir button').forEach((b) => b.classList.toggle('active', b.dataset.dir === settings.gradDir));
+  $('#gradRev').classList.toggle('active', settings.gradRev);
+  $('#gradHint').textContent = gradActive
+    ? 'グラデーションで配置中です。レイアウトを変えても保たれます（写真を手で入れ替えると解除されます）。'
+    : '基準を選ぶと、見た目がグラデーションになるように写真を配置します。';
+}
+$$('#gradKey button').forEach((b) => b.addEventListener('click', () => setGradient(b.dataset.key as GradKey, settings.gradDir, settings.gradRev)));
+$$('#gradDir button').forEach((b) => b.addEventListener('click', () => setGradient(settings.gradKey, b.dataset.dir as GradDir, settings.gradRev)));
+$('#gradRev').addEventListener('click', () => setGradient(settings.gradKey, settings.gradDir, !settings.gradRev));
+
 /** タイルの縦横比と写真の縦横比が合うように割り当て直す */
 function autoFit() {
   const items = list();
   if (items.length < 2) return;
+  gradActive = null;
+  syncGradUI();
   for (let pass = 0; pass < 3; pass++) {
     const ts = computeTiles(items);
     const slots = ts.map((t) => ({ idx: t.idx, a: t.w / t.h, area: t.w * t.h }));
@@ -712,6 +1040,21 @@ $('#selReset').addEventListener('click', () => {
   renderSelPanel();
   render();
 });
+function rotateSelected(dir: 1 | -1) {
+  const p = selected();
+  if (!p) return;
+  rotatePhoto(p, dir);
+  if (!usingSamples()) renderList();
+  else renderLayoutThumbs();
+  renderSelPanel();
+  render();
+}
+$('#selRotL').addEventListener('click', () => rotateSelected(-1));
+$('#selRotR').addEventListener('click', () => rotateSelected(1));
+$('#selView').addEventListener('click', () => {
+  const p = selected();
+  if (p) openPhotoViewer(p);
+});
 $('#selDelete').addEventListener('click', () => {
   const p = selected();
   if (!p) return;
@@ -723,9 +1066,9 @@ $('#selDelete').addEventListener('click', () => {
 
 const OVERLAY_HINTS: Record<OverlayMode, string> = {
   none: '写真ごとに検出した構図を、タイルの中に図形として組み込めます。',
-  guide: '検出した構図の補助線（円・三分割線・黄金スパイラル・対角線など）を細く重ねます。',
-  accent: '構図の形を太いラインで描き、デザインのアクセントにします。',
-  cutout: '構図の形（円・スパイラル・三角・アーチなど）で写真を切り抜きます。',
+  guide: '検出した構図の補助線（円・三分割線・黄金分割線・対角線など）を細く重ねます。図形は元の写真を基準に描くので、どのタイルに入れても形が崩れません。',
+  accent: '構図の要となる線と点を強調して描き、デザインのアクセントにします。',
+  cutout: '構図の形（円・長方形・三角・半円・アーチ）の窓で写真を切り抜き、外側は背景色で薄く覆います。',
 };
 
 const BG_BASE = ['#ffffff', '#f3f2ef', '#e9e7e2', '#1d1d1f', '#000000', '#e8792b'];
@@ -1016,12 +1359,19 @@ if (IS_NATIVE) {
 }
 // Androidの「戻る」ボタン：開いているシートを閉じる。何も無ければアプリを終了
 onBackButton(() => {
+  if (!viewer.hidden) {
+    closeViewer();
+    return true;
+  }
   const open = $$('.sheet-backdrop').find((s) => !s.hidden);
   if (open) {
     open.hidden = true;
     return true;
   }
   return false;
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !viewer.hidden) closeViewer();
 });
 $('#shareClose').addEventListener('click', () => ($('#shareSheet').hidden = true));
 $('#aboutBtn').addEventListener('click', () => ($('#aboutSheet').hidden = false));
@@ -1032,6 +1382,7 @@ $$('.sheet-backdrop').forEach((s) => s.addEventListener('click', (e) => e.target
 
 buildLayoutButtons();
 syncControls();
+syncGradUI();
 renderOvSwatches();
 renderList();
 renderSelPanel();

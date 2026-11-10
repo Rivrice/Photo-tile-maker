@@ -90,6 +90,34 @@ async function decode(file: Blob, resize?: { w: number; h: number }): Promise<Dr
 
 function release(src: Drawable) {
   if ('close' in src && typeof src.close === 'function') src.close();
+  else if (src instanceof HTMLCanvasElement) src.width = 0;
+}
+
+/** 90°単位で回転したキャンバス（q = 時計回りの回数） */
+function rotated(src: Drawable, q: number): HTMLCanvasElement {
+  const odd = q % 2 === 1;
+  const c = canvas(odd ? src.height : src.width, odd ? src.width : src.height);
+  const x = c.getContext('2d')!;
+  x.translate(c.width / 2, c.height / 2);
+  x.rotate((q * Math.PI) / 2);
+  x.drawImage(src, -src.width / 2, -src.height / 2);
+  return c;
+}
+
+/** 写真を90°回転する（dir: 1 = 時計回り、-1 = 反時計回り）。構図は回転後の画像で検出し直す */
+export function rotatePhoto(p: PhotoItem, dir: 1 | -1) {
+  const q = (dir + 4) % 4;
+  const prev = p.preview;
+  p.preview = rotated(prev, q);
+  if (prev instanceof HTMLCanvasElement) prev.width = 0;
+  else release(prev);
+  p.mini = rotated(p.mini, q);
+  p.thumbUrl = p.mini.toDataURL('image/jpeg', 0.8);
+  [p.width, p.height] = [p.height, p.width];
+  p.rot = (p.rot + q) % 4;
+  p.comp = analyze(p.preview).comp;
+  p.pan = null;
+  p.zoom = 1;
 }
 
 function thumb(src: Drawable) {
@@ -118,6 +146,7 @@ function finishItem(name: string, file: File | null, full: Drawable, date: numbe
     date,
     pan: null,
     zoom: 1,
+    rot: 0,
   };
 }
 
@@ -147,17 +176,25 @@ export async function extractRegion(p: PhotoItem, sx: number, sy: number, sw: nu
     return resizeTo(p.preview, sx * k, sy * k, sw * k, sh * k, dw, dh);
   }
   let src: Drawable | null = null;
+  // 元ファイルは回転前の向き：回転前の大きさで縮小してから回す
+  const odd = p.rot % 2 === 1;
+  const bw = odd ? p.height : p.width, bh = odd ? p.width : p.height;
   try {
     if (scale < 0.98) {
-      const want = { w: p.width * scale, h: p.height * scale };
+      const want = { w: bw * scale, h: bh * scale };
       src = await decode(p.file, want);
       // 向きの扱いが違うブラウザ対策：比率が合わなければ縮小なしで読み直す
-      if (Math.abs(src.width / src.height - p.width / p.height) > 0.02) {
+      if (Math.abs(src.width / src.height - bw / bh) > 0.02) {
         release(src);
         src = null;
       }
     }
     if (!src) src = await decode(p.file);
+    if (p.rot) {
+      const r = rotated(src, p.rot);
+      release(src);
+      src = r;
+    }
     const k = src.width / p.width;
     return resizeTo(src, sx * k, sy * k, sw * k, sh * k, dw, dh);
   } catch {
