@@ -5,7 +5,8 @@ import '@fontsource/inter/700.css';
 import '@fontsource-variable/noto-sans-jp/wght.css';
 import './style.css';
 import { COMP_LABELS, rgbToHsl } from './analyze';
-import { LAYOUTS, getLayout, pointInTile } from './layouts';
+import { allLayouts, getCustom, getLayout, layoutToCells, pointInTile } from './layouts';
+import { initCustomEditor } from './custom';
 import { ACCEPT, MAX_PHOTOS, extractRegion, loadPhoto, makeSamples } from './photos';
 import { IS_IOS, LOW_CONF, canvasToBlob, cropFor, drawScene, effectiveComp, photoBox, type Crop } from './render';
 import { IS_NATIVE, nativeSave, nativeShare, onBackButton } from './native';
@@ -189,7 +190,7 @@ function renderLayoutThumbs() {
   thumbTimer = window.setTimeout(() => {
     const items = list();
     const d = canvasDims(settings.aspect);
-    for (const def of LAYOUTS) {
+    for (const def of allLayouts()) {
       const c = document.querySelector<HTMLCanvasElement>(`#layouts [data-layout="${def.id}"] canvas`);
       if (!c) continue;
       const size = 120;
@@ -226,7 +227,7 @@ function renderLayoutThumbs() {
 function buildLayoutButtons() {
   const host = $('#layouts');
   host.innerHTML = '';
-  for (const def of LAYOUTS) {
+  for (const def of allLayouts()) {
     const b = document.createElement('button');
     b.className = 'preset';
     b.dataset.layout = def.id;
@@ -239,7 +240,50 @@ function buildLayoutButtons() {
     });
     host.appendChild(b);
   }
+  // 自分でレイアウトを作る
+  const add = document.createElement('button');
+  add.className = 'preset preset-add';
+  add.innerHTML = `<div class="pv"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></div><span>カスタム作成</span>`;
+  add.addEventListener('click', () => editor.open());
+  host.appendChild(add);
 }
+
+// ---------- カスタムレイアウト ----------
+
+const editor = initCustomEditor({
+  photos: () => list(),
+  settings: () => settings,
+  dims: () => canvasDims(settings.aspect),
+  templates: () => allLayouts().map((d) => ({ id: d.id, name: d.name })),
+  templateCells: (id) => {
+    const c = id.startsWith('custom:') ? getCustom(id.slice(7)) : null;
+    if (c) return JSON.parse(JSON.stringify(c.cells));
+    const d = canvasDims(settings.aspect);
+    return layoutToCells(getLayout(id), list().map((p) => p.width / p.height), d.W, d.H, settings.seed, settings.columns);
+  },
+  maxCells: MAX_PHOTOS,
+  toast,
+  onSaved: (id) => {
+    settings.layout = id;
+    saveSettings();
+    buildLayoutButtons();
+    syncControls();
+    render();
+    renderLayoutThumbs();
+  },
+  onDeleted: (id) => {
+    if (settings.layout === id) settings.layout = 'mosaic';
+    saveSettings();
+    buildLayoutButtons();
+    syncControls();
+    render();
+    renderLayoutThumbs();
+  },
+});
+$('#editCustom').addEventListener('click', () => {
+  if (settings.layout.startsWith('custom:')) editor.open({ editId: settings.layout.slice(7) });
+});
+$('#editFromCurrent').addEventListener('click', () => editor.open({ fromLayout: settings.layout }));
 
 // ---------- 写真一覧 ----------
 
@@ -1419,6 +1463,9 @@ function syncControls() {
   $('#slantField').hidden = !def.slantable;
   $('#radiusField').hidden = !def.rounded;
   $<HTMLButtonElement>('#reseed').hidden = !def.usesSeed;
+  const isCustom = settings.layout.startsWith('custom:');
+  $('#editCustom').hidden = !isCustom;
+  $('#editFromCurrent').hidden = isCustom;
   $$('#overlaySeg button').forEach((b) => b.classList.toggle('active', b.dataset.ov === settings.overlay));
   $('#overlayHint').textContent = OVERLAY_HINTS[settings.overlay];
   $<HTMLInputElement>('#showLabel').checked = settings.showLabel;
