@@ -64,13 +64,64 @@ function area(poly: Pt[]) {
   }
   return a / 2;
 }
+/** 面積の重心（曲線で区切ったマスのように、点が片側に偏っていてもずれない） */
 function centroid(poly: Pt[]): Pt {
-  let x = 0, y = 0;
-  for (const p of poly) {
-    x += p.x;
-    y += p.y;
+  let a = 0, x = 0, y = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const p = poly[i], q = poly[(i + 1) % poly.length];
+    const k = p.x * q.y - q.x * p.y;
+    a += k;
+    x += (p.x + q.x) * k;
+    y += (p.y + q.y) * k;
   }
-  return { x: x / poly.length, y: y / poly.length };
+  if (Math.abs(a) < 1e-12) {
+    let sx = 0, sy = 0;
+    for (const p of poly) {
+      sx += p.x;
+      sy += p.y;
+    }
+    return { x: sx / poly.length, y: sy / poly.length };
+  }
+  return { x: x / (3 * a), y: y / (3 * a) };
+}
+function distToEdges(poly: Pt[], x: number, y: number) {
+  let d = Infinity;
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i], b = poly[(i + 1) % poly.length];
+    const vx = b.x - a.x, vy = b.y - a.y;
+    const t = Math.max(0, Math.min(1, ((x - a.x) * vx + (y - a.y) * vy) / (vx * vx + vy * vy || 1)));
+    d = Math.min(d, Math.hypot(a.x + vx * t - x, a.y + vy * t - y));
+  }
+  return d;
+}
+/** 番号を置く点：マスの内側で、なるべく縁から離れたところ */
+function labelPoint(poly: Pt[]): Pt {
+  const c = centroid(poly);
+  const b = bbox(poly);
+  const r = Math.min(b.x1 - b.x0, b.y1 - b.y0);
+  if (inside(poly, c.x, c.y) && distToEdges(poly, c.x, c.y) > r * 0.3) return c;
+  let best = c, bd = inside(poly, c.x, c.y) ? distToEdges(poly, c.x, c.y) : -1;
+  const N = 14;
+  for (let i = 0; i <= N; i++)
+    for (let j = 0; j <= N; j++) {
+      const x = b.x0 + ((b.x1 - b.x0) * i) / N, y = b.y0 + ((b.y1 - b.y0) * j) / N;
+      if (!inside(poly, x, y)) continue;
+      const d = distToEdges(poly, x, y);
+      if (d > bd) {
+        bd = d;
+        best = { x, y };
+      }
+    }
+  return best;
+}
+/** かけらの太さの目安（2×面積÷周長。幅 w の細長い帯なら、ほぼ w） */
+function thickness(poly: Pt[]) {
+  let per = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i], b = poly[(i + 1) % poly.length];
+    per += Math.hypot(b.x - a.x, b.y - a.y);
+  }
+  return per ? (2 * Math.abs(area(poly))) / per : 0;
 }
 function bbox(poly: Pt[]) {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -162,6 +213,10 @@ interface CutOpts {
   minIn: number;
   /** これより小さいかけらができるなら切らない */
   minArea: number;
+  /** これより細いかけらができるなら切らない（端ぎりぎりを切ったときの細い帯） */
+  minThick: number;
+  /** 細すぎて切らなかったとき */
+  onThin?: () => void;
 }
 /**
  * 多角形（凹でも可）を、線に沿って切る。線がマスを何度も横切るときは、続きの線でさらに切る。
@@ -181,7 +236,14 @@ function cutPoly(poly: Pt[], path: Pt[], o: CutOpts, depth = 0): Pt[][] {
     const sub = subPath(path, c1.s, c2.s);
     const A = [...sub, ...walk(poly, c2.pos, c1.pos)];
     const B = [...sub.slice().reverse(), ...walk(poly, c1.pos, c2.pos)];
-    if (Math.abs(area(A)) < o.minArea || Math.abs(area(B)) < o.minArea) continue;
+    if (Math.abs(area(A)) < o.minArea || Math.abs(area(B)) < o.minArea) {
+      o.onThin?.();
+      continue;
+    }
+    if (thickness(A) < o.minThick || thickness(B) < o.minThick) {
+      o.onThin?.();
+      continue;
+    }
     // 線の続きで、できたかけらをさらに切る
     const rest = { ...o, from: Math.max(o.from, c2.s) - c2.s, to: o.to - c2.s };
     const tail = subPath(path, c2.s, pathLen(path));
@@ -388,10 +450,12 @@ export function initCustomEditor(deps: EditorDeps) {
     <div class="ed-stage" id="edStage"><canvas id="edCanvas"></canvas></div>
     <p class="ed-hint" id="edHint"></p>
     <div class="ed-opts">
+      <div class="ed-toolopt">
       <div class="ed-auto" id="edSizeRow"><span>自動配置</span>${PATTERNS.map((p) => `<button data-pat="${p.id}">${p.name}</button>`).join('')}</div>
       <div class="ed-cut" id="edCutRow">
         <div class="seg2 ed-cutmode"><button data-cut="line">直線</button><button data-cut="curve">曲線</button></div>
         <label class="ed-size" id="edSmoothRow"><span>滑らかさ</span><input id="edSmooth" type="range" min="0" max="1" step="0.05" /></label>
+      </div>
       </div>
       <div class="ed-acts">
         <button class="ed-icon" id="edUndo" aria-label="元に戻す">${svg('undo')}</button>
@@ -538,7 +602,7 @@ export function initCustomEditor(deps: EditorDeps) {
       x.setLineDash(i === sel ? [] : [4, 3]);
       x.stroke();
       x.setLineDash([]);
-      const c0 = toScreen(centroid(c));
+      const c0 = toScreen(labelPoint(c));
       x.fillStyle = i === sel ? '#e8792b' : 'rgba(20,20,22,.6)';
       x.beginPath();
       x.arc(c0.x, c0.y, 10, 0, Math.PI * 2);
@@ -645,11 +709,12 @@ export function initCustomEditor(deps: EditorDeps) {
     const unit = Math.min(f.iw, f.ih);
     const px0 = cutPath(path).map(toPx);
     const L = pathLen(px0);
-    if (L < unit * 0.04) return 0;
+    if (L < unit * 0.04) return null;
     // 線の両端を延ばして、マスの端まで届かせる（ただし、なぞった部分が通ったマスだけを切る）
     const E = Math.max(f.iw, f.ih) * 3;
     const px = extend(px0, E);
-    const opts: CutOpts = { from: E, to: E + L, minIn: unit * 0.06, minArea: f.iw * f.ih * 0.012 };
+    let thin = false;
+    const opts: CutOpts = { from: E, to: E + L, minIn: unit * 0.06, minArea: f.iw * f.ih * 0.012, minThick: unit * 0.07, onThin: () => (thin = true) };
     const out: Pt[][] = [];
     let made = 0;
     for (const c of cells) {
@@ -660,7 +725,7 @@ export function initCustomEditor(deps: EditorDeps) {
       out.push(...use.map((p) => p.map(fromPx)));
     }
     cells = out;
-    return made;
+    return { made, thin };
   }
 
   // ---------- 操作 ----------
@@ -710,7 +775,12 @@ export function initCustomEditor(deps: EditorDeps) {
     if (drag.kind === 'draw') {
       stroke!.push(p);
     } else if (drag.kind === 'move') {
-      const dx = p.x - drag.start.x, dy = p.y - drag.start.y;
+      let dx = p.x - drag.start.x, dy = p.y - drag.start.y;
+      // 枠の外へはみ出さないようにする（枠より大きいマスはそのまま）
+      const b = bbox(drag.orig);
+      const lim = (d: number, lo: number, hi: number) => (hi - lo > 1 ? d : Math.min(1 - hi, Math.max(-lo, d)));
+      dx = lim(dx, b.x0, b.x1);
+      dy = lim(dy, b.y0, b.y1);
       cells[sel] = drag.orig.map((v) => ({ x: v.x + dx, y: v.y + dy }));
     } else {
       const { c, start, orig } = drag;
@@ -732,8 +802,9 @@ export function initCustomEditor(deps: EditorDeps) {
       stroke = null;
       if (e.type === 'pointerup') {
         if (tool === 'knife') {
-          const n = knife(path);
-          if (!n && path.length > 2) deps.toast(cells.length >= deps.maxCells ? `マスは最大${deps.maxCells}個までです` : '区切るマスがありませんでした');
+          const r = knife(path);
+          if (r && !r.made && path.length > 2)
+            deps.toast(cells.length >= deps.maxCells ? `マスは最大${deps.maxCells}個までです` : r.thin ? '細すぎるマスになるので区切りませんでした。もう少し内側をなぞってください' : '区切るマスがありませんでした');
         } else {
           const add = shapesFor(path);
           const room = deps.maxCells - cells.length;
