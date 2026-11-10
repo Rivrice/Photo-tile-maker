@@ -138,12 +138,70 @@ function keyPoint(p: PhotoItem, type: CompType): Pt {
  * 構図に合わせた図形。座標はすべて元画像の上で決めてからタイルへ写すので、
  * どのタイルに入れても、写真との位置関係と図形の比率は変わらない。
  */
+/** 手動で選んだ構図のときだけ、図形の調整を返す */
+export function shapeEdit(p: PhotoItem) {
+  const e = p.shape;
+  if (!e || p.compOverride == null || p.compOverride === 'none') return null;
+  if (!e.x && !e.y && e.scale === 1 && !e.angle) return null;
+  return e;
+}
+
+/** 図形の調整で動かすときの基準点（元画像の正規化座標） */
+function shapeAnchor(p: PhotoItem, type: CompType): Pt {
+  const f = p.comp.focus;
+  switch (type) {
+    case 'thirds':
+    case 'golden':
+      return keyPoint(p, type);
+    case 'diagonal': {
+      const seg = diagSeg(p);
+      return { x: (seg.a.x + seg.b.x) / 2, y: (seg.a.y + seg.b.y) / 2 };
+    }
+    case 'horizon':
+      return { x: 0.5, y: p.comp.horizon ?? f.y };
+    case 'symmetry':
+      return { x: p.comp.axis ?? f.x, y: 0.5 };
+    default:
+      return f;
+  }
+}
+
+function diagSeg(p: PhotoItem) {
+  const d = p.comp.diag ?? 1;
+  return p.comp.line ?? (d === 1 ? { a: { x: 0, y: 0 }, b: { x: 1, y: 1 } } : { a: { x: 1, y: 0 }, b: { x: 0, y: 1 } });
+}
+
 function shapeSet(s: ShapeCtx): ShapeSet {
-  const { p, type, map, len } = s;
+  const { p, type } = s;
+  // 図形の調整：基準点を中心に拡大・回転してから、移動する（タイルの座標で）
+  const ed = shapeEdit(p);
+  const rot = ed ? (ed.angle * Math.PI) / 180 : 0;
+  const sc = ed ? ed.scale : 1;
+  let map = s.map, len = s.len;
+  if (ed) {
+    const an = shapeAnchor(p, type);
+    const A = s.map(an.x, an.y);
+    const D = s.map(an.x + ed.x, an.y + ed.y);
+    const cs = Math.cos(rot) * sc, sn = Math.sin(rot) * sc;
+    map = (u, v) => {
+      const P = s.map(u, v);
+      const x = P.x - A.x, y = P.y - A.y;
+      return { x: D.x + x * cs - y * sn, y: D.y + x * sn + y * cs };
+    };
+    len = (l) => s.len(l) * sc;
+  }
   const main = new Path2D(), sub = new Path2D(), cut = new Path2D();
   const dots: Pt[] = [];
+  const onEdge = (q: Pt) => q.x <= 0.001 || q.x >= 0.999 || q.y <= 0.001 || q.y >= 0.999;
+  // 写真の端から端までの線は、動かしても途切れないように外へ延ばす
+  const far = s.len(4);
   const line = (path: Path2D, a: Pt, b: Pt) => {
-    const A = map(a.x, a.y), B = map(b.x, b.y);
+    let A = map(a.x, a.y), B = map(b.x, b.y);
+    if (ed && onEdge(a) && onEdge(b)) {
+      const dx = B.x - A.x, dy = B.y - A.y, l = Math.hypot(dx, dy) || 1;
+      A = { x: A.x - (dx / l) * far, y: A.y - (dy / l) * far };
+      B = { x: B.x + (dx / l) * far, y: B.y + (dy / l) * far };
+    }
     path.moveTo(A.x, A.y);
     path.lineTo(B.x, B.y);
   };
@@ -190,8 +248,7 @@ function shapeSet(s: ShapeCtx): ShapeSet {
     }
     case 'diagonal': {
       // 検出した線があればそれを、なければ画像の対角線を使う
-      const d = p.comp.diag ?? 1;
-      const seg = p.comp.line ?? (d === 1 ? { a: { x: 0, y: 0 }, b: { x: 1, y: 1 } } : { a: { x: 1, y: 0 }, b: { x: 0, y: 1 } });
+      const seg = diagSeg(p);
       line(main, seg.a, seg.b);
       // 平行な補助線（対角線を挟んで等間隔）
       const nx = -(seg.b.y - seg.a.y) * p.height, ny = (seg.b.x - seg.a.x) * p.width;
@@ -200,7 +257,21 @@ function shapeSet(s: ShapeCtx): ShapeSet {
         const ox = ((nx / nl) * o * short) / p.width, oy = ((ny / nl) * o * short) / p.height;
         line(sub, { x: seg.a.x + ox, y: seg.a.y + oy }, { x: seg.b.x + ox, y: seg.b.y + oy });
       }
-      // 切り抜き：被写体のある側の三角形（線の両端と、その側の角）
+      // 切り抜き：被写体のある側。図形を動かしたときは、線のその側全体（タイルで切り抜かれる）
+      if (ed) {
+        const A = map(seg.a.x, seg.a.y), B = map(seg.b.x, seg.b.y), F = map(f.x, f.y);
+        const dx = B.x - A.x, dy = B.y - A.y, l = Math.hypot(dx, dy) || 1;
+        const ux = dx / l, uy = dy / l;
+        let nx = -uy, ny = ux;
+        if ((F.x - A.x) * nx + (F.y - A.y) * ny < 0) [nx, ny] = [-nx, -ny];
+        const p1 = { x: A.x - ux * far, y: A.y - uy * far }, p2 = { x: B.x + ux * far, y: B.y + uy * far };
+        cut.moveTo(p1.x, p1.y);
+        cut.lineTo(p2.x, p2.y);
+        cut.lineTo(p2.x + nx * far, p2.y + ny * far);
+        cut.lineTo(p1.x + nx * far, p1.y + ny * far);
+        cut.closePath();
+        break;
+      }
       const side = (q: Pt) => (seg.b.x - seg.a.x) * (q.y - seg.a.y) * p.height - (seg.b.y - seg.a.y) * (q.x - seg.a.x) * p.width;
       const sf = side(f) || 1;
       const corners = [
@@ -229,8 +300,8 @@ function shapeSet(s: ShapeCtx): ShapeSet {
       const r = Math.min(0.34, Math.max(up, down) * (p.height / short) * 0.85);
       const C = map(f.x, y);
       const R = len(r);
-      if (up >= down) cut.arc(C.x, C.y, R, Math.PI, Math.PI * 2);
-      else cut.arc(C.x, C.y, R, 0, Math.PI);
+      if (up >= down) cut.arc(C.x, C.y, R, Math.PI + rot, Math.PI * 2 + rot);
+      else cut.arc(C.x, C.y, R, rot, Math.PI + rot);
       cut.closePath();
       dots.push({ x: f.x, y });
       break;
@@ -242,10 +313,10 @@ function shapeSet(s: ShapeCtx): ShapeSet {
       // 切り抜き：軸を中心にしたアーチ窓
       const aw = 0.22; // 半幅（短辺比）
       const top = 0.1 + aw * dv, bottom = 0.92;
-      const L = map(x - aw * du, bottom), R = map(x + aw * du, bottom), T = map(x, top);
+      const L = map(x - aw * du, bottom), R = map(x + aw * du, bottom), T = map(x, top), LT = map(x - aw * du, top);
       cut.moveTo(L.x, L.y);
-      cut.lineTo(L.x, T.y);
-      cut.arc(T.x, T.y, len(aw), Math.PI, Math.PI * 2);
+      cut.lineTo(LT.x, LT.y);
+      cut.arc(T.x, T.y, len(aw), Math.PI + rot, Math.PI * 2 + rot);
       cut.lineTo(R.x, R.y);
       cut.closePath();
       break;
