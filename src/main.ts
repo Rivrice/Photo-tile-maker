@@ -1,6 +1,8 @@
 import '@fontsource/inter/400.css';
 import '@fontsource/inter/600.css';
 import '@fontsource/inter/700.css';
+// 日本語は端末によって書体がばらつくので、Noto Sans JP を同梱して統一する
+import '@fontsource-variable/noto-sans-jp/wght.css';
 import './style.css';
 import { COMP_LABELS, rgbToHsl } from './analyze';
 import { LAYOUTS, getLayout, pointInTile } from './layouts';
@@ -163,7 +165,7 @@ function draw() {
   const out = outSize();
   $('#meta').textContent = usingSamples()
     ? `サンプル表示中 ・ 写真を追加するとここに並びます（最大${MAX_PHOTOS}枚）`
-    : `${items.length}枚 ・ ${def.name} ・ 書き出し ${out.w}×${out.h}px`;
+    : `${items.length}枚　${def.name}　書き出し ${out.w} × ${out.h} px`;
 }
 
 function applyStageTransform(extra = 1) {
@@ -1097,8 +1099,8 @@ function syncGradUI() {
   $$('#gradDir button').forEach((b) => b.classList.toggle('active', b.dataset.dir === settings.gradDir));
   $('#gradRev').classList.toggle('active', settings.gradRev);
   $('#gradHint').textContent = gradActive
-    ? 'グラデーションで配置中です。レイアウトを変えても保たれます（写真を手で入れ替えると解除されます）。'
-    : '基準を選ぶと、見た目がグラデーションになるように写真を配置します。';
+    ? 'グラデーションで配置しています。写真を手で入れ替えると解除されます。'
+    : '基準を選ぶと、画面全体がグラデーションになるように写真を配置します。';
 }
 $$('#gradKey button').forEach((b) => b.addEventListener('click', () => setGradient(b.dataset.key as GradKey, settings.gradDir, settings.gradRev)));
 $$('#gradDir button').forEach((b) => b.addEventListener('click', () => setGradient(settings.gradKey, b.dataset.dir as GradDir, settings.gradRev)));
@@ -1162,10 +1164,10 @@ $('#selDelete').addEventListener('click', () => {
 // ---------- コントロール ----------
 
 const OVERLAY_HINTS: Record<OverlayMode, string> = {
-  none: '写真ごとに検出した構図を、タイルの中に図形として組み込めます。',
-  guide: '検出した構図の補助線（円・三分割線・黄金分割線・対角線など）を細く重ねます。図形は元の写真を基準に描くので、どのタイルに入れても形が崩れません。',
-  accent: '構図の要となる線と点を強調して描き、デザインのアクセントにします。',
-  cutout: '構図の形（円・長方形・三角・半円・アーチ）の窓で写真を切り抜き、外側は背景色で薄く覆います。',
+  none: '写真ごとに検出した構図を、図形としてタイルに組み込めます。',
+  guide: '検出した構図の補助線（円・三分割線・黄金分割線・対角線など）を細く重ねます。',
+  accent: '構図の要となる線と点を太く描き、デザインのアクセントにします。',
+  cutout: '構図の形（円・長方形・三角・半円・アーチ）の窓で写真を切り抜きます。',
 };
 
 const BG_BASE = ['#ffffff', '#f3f2ef', '#e9e7e2', '#1d1d1f', '#000000', '#e8792b'];

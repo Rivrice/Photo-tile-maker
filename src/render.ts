@@ -400,7 +400,7 @@ export function drawScene(x: CanvasRenderingContext2D, o: SceneOptions) {
     if (st.showLabel && type !== 'none') {
       const label = COMP_LABELS[type];
       const fs = Math.max(9, 15 * unit);
-      x.font = `600 ${fs}px Inter, 'Noto Sans JP', system-ui, sans-serif`;
+      x.font = `600 ${fs}px Inter, 'Noto Sans JP Variable', 'Noto Sans JP', sans-serif`;
       const tw = x.measureText(label).width;
       const pad = fs * 0.55;
       const bx = -w / 2 + pad * 1.4, by = h / 2 - pad * 1.4 - fs * 1.6;
