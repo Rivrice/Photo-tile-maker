@@ -48,10 +48,10 @@ const TOOLS: { id: Tool; name: string }[] = [
 const HINTS: Record<Tool, string> = {
   select: 'マスをタップして選び、ドラッグで移動。右下の丸をドラッグで大きさを変えます。',
   knife: 'なぞった線に沿って、マスを区切ります。直線はまっすぐ、曲線はなぞった形のまま区切ります。',
-  rect: 'ドラッグした範囲に置きます。長い線や曲線をなぞると、線に沿って並べます。',
-  circle: 'ドラッグした範囲に置きます。長い線や曲線をなぞると、線に沿って並べます。',
-  tri: 'ドラッグした範囲に置きます。長い線や曲線をなぞると、線に沿って並べます。',
-  hex: 'ドラッグした範囲に置きます。長い線や曲線をなぞると、線に沿って並べます。',
+  rect: 'ドラッグした範囲に1つ置きます。線をなぞると、重ならないよう大きさをそろえて線に沿って並べます。',
+  circle: 'ドラッグした範囲に1つ置きます。線をなぞると、重ならないよう大きさをそろえて線に沿って並べます。',
+  tri: 'ドラッグした範囲に1つ置きます。線をなぞると、重ならないよう大きさをそろえて線に沿って並べます。',
+  hex: 'ドラッグした範囲に1つ置きます。線をなぞると、重ならないよう大きさをそろえて線に沿って並べます。',
 };
 
 // ---------- 幾何 ----------
@@ -279,6 +279,94 @@ function makeShape(kind: ShapeKind, cx: number, cy: number, w: number, h: number
   }
 }
 
+/** 中心点どうしが重ならない大きさにする */
+function fitSize(centers: Pt[], s: number) {
+  let dmin = Infinity;
+  for (let i = 0; i < centers.length; i++)
+    for (let j = i + 1; j < centers.length; j++) dmin = Math.min(dmin, Math.hypot(centers[i].x - centers[j].x, centers[i].y - centers[j].y));
+  return Math.min(s, dmin * 0.9);
+}
+
+type Pattern = 'grid' | 'stagger' | 'ring' | 'spiral' | 'wave';
+const PATTERNS: { id: Pattern; name: string }[] = [
+  { id: 'grid', name: '格子' },
+  { id: 'stagger', name: '千鳥' },
+  { id: 'ring', name: '円形' },
+  { id: 'spiral', name: 'らせん' },
+  { id: 'wave', name: '波' },
+];
+/** 規則的な配置：中心点と大きさ（幅 w・高さ h の枠の中） */
+function patternCenters(p: Pattern, n: number, w: number, h: number): { c: Pt[]; s: number } {
+  const m = Math.min(w, h);
+  if (n <= 1) return { c: [{ x: w / 2, y: h / 2 }], s: m * 0.7 };
+  switch (p) {
+    case 'grid':
+    case 'stagger': {
+      // 枠の縦横比に合う列数を選ぶ（千鳥は1行おきに半分ずらす）
+      let best = { cols: 1, rows: n, s: 0 };
+      for (let cols = 1; cols <= n; cols++) {
+        const rows = Math.ceil(n / cols);
+        const cw = w / (cols + (p === 'stagger' ? 0.5 : 0));
+        const rh = h / (p === 'stagger' ? 1 + (rows - 1) * 0.87 : rows);
+        const s = Math.min(cw, rh);
+        if (s > best.s) best = { cols, rows, s };
+      }
+      const { cols, rows, s } = best;
+      const dy = p === 'stagger' ? s * 0.87 : s;
+      const totalH = p === 'stagger' ? s + (rows - 1) * dy : rows * s;
+      const c: Pt[] = [];
+      for (let r = 0; r < rows; r++) {
+        const inRow = Math.min(cols, n - r * cols);
+        const off = p === 'stagger' && r % 2 ? s / 2 : 0;
+        const rowW = inRow * s + (p === 'stagger' ? s / 2 : 0);
+        const x0 = (w - rowW) / 2 + s / 2 + (p === 'stagger' ? off : 0);
+        for (let i = 0; i < inRow; i++) c.push({ x: x0 + i * s, y: (h - totalH) / 2 + s / 2 + r * dy });
+      }
+      return { c, s: s * 0.9 };
+    }
+    case 'ring': {
+      // 6個以上は、真ん中に1つ大きく置いて、残りを円周に
+      const center = n >= 6;
+      const k = center ? n - 1 : n;
+      const sn = Math.sin(Math.PI / k);
+      const R = (m / 2) * 0.95 / (1 + sn);
+      const s = 2 * R * sn * 0.92;
+      const c = Array.from({ length: k }, (_, i) => {
+        const a = -Math.PI / 2 + (i / k) * Math.PI * 2;
+        return { x: w / 2 + Math.cos(a) * R, y: h / 2 + Math.sin(a) * R };
+      });
+      if (center) return { c: [{ x: w / 2, y: h / 2 }, ...c], s };
+      return { c, s };
+    }
+    case 'spiral': {
+      // ひまわりの種の並び（黄金角）
+      const g = Math.PI * (3 - Math.sqrt(5));
+      const c = Array.from({ length: n }, (_, i) => {
+        const r = Math.sqrt((i + 0.5) / n);
+        return { x: w / 2 + Math.cos(i * g) * r * (w / 2) * 0.82, y: h / 2 + Math.sin(i * g) * r * (h / 2) * 0.82 };
+      });
+      return { c, s: m * 0.5 };
+    }
+    case 'wave': {
+      // 枠の長い方向に、ゆるい波の形で並べる。数が多いときは2列
+      const horiz = w >= h;
+      const lines = n > 9 ? 2 : 1;
+      const per = Math.ceil(n / lines);
+      const c: Pt[] = [];
+      for (let l = 0; l < lines; l++) {
+        const cnt = Math.min(per, n - l * per);
+        for (let i = 0; i < cnt; i++) {
+          const t = (i + 0.5) / cnt;
+          const base = lines === 1 ? 0.5 : 0.3 + l * 0.4;
+          const wv = Math.sin(t * Math.PI * 2 + l * Math.PI) * (lines === 1 ? 0.2 : 0.1);
+          c.push(horiz ? { x: t * w, y: (base + wv) * h } : { x: (base + wv) * w, y: t * h });
+        }
+      }
+      return { c, s: (horiz ? w : h) / per };
+    }
+  }
+}
+
 // ---------- 画面 ----------
 
 export function initCustomEditor(deps: EditorDeps) {
@@ -300,7 +388,7 @@ export function initCustomEditor(deps: EditorDeps) {
     <div class="ed-stage" id="edStage"><canvas id="edCanvas"></canvas></div>
     <p class="ed-hint" id="edHint"></p>
     <div class="ed-opts">
-      <label class="ed-size" id="edSizeRow"><span>並べる大きさ</span><input id="edSize" type="range" min="0.06" max="0.5" step="0.01" /></label>
+      <div class="ed-auto" id="edSizeRow"><span>自動配置</span>${PATTERNS.map((p) => `<button data-pat="${p.id}">${p.name}</button>`).join('')}</div>
       <div class="ed-cut" id="edCutRow">
         <div class="seg2 ed-cutmode"><button data-cut="line">直線</button><button data-cut="curve">曲線</button></div>
         <label class="ed-size" id="edSmoothRow"><span>滑らかさ</span><input id="edSmooth" type="range" min="0" max="1" step="0.05" /></label>
@@ -324,7 +412,8 @@ export function initCustomEditor(deps: EditorDeps) {
   let cells: Pt[][] = [];
   let sel = -1;
   let tool: Tool = 'knife';
-  let size = 0.2;
+  /** タップで置くときの大きさ（短辺比） */
+  const size = 0.2;
   // 区切る線：直線か曲線か、曲線の滑らかさ
   let cutMode: 'line' | 'curve' = 'curve';
   let smoothness = 0.5;
@@ -523,7 +612,18 @@ export function initCustomEditor(deps: EditorDeps) {
     if (L < Math.min(f.iw, f.ih) * 0.03) return [makeShape(kind, a.x, a.y, unit, unit).map(fromPx)];
     // 曲線や細長い線：線に沿って並べる
     const along = L > chord * 1.25 || (Math.min(bw, bh) < Math.max(bw, bh) * 0.4 && L > unit * 1.6);
-    if (along) return resample(px, unit * 1.08).map((p) => makeShape(kind, p.x, p.y, unit, unit).map(fromPx));
+    if (along) {
+      // ほぼまっすぐなら直線に、曲がっていれば滑らかにした線に沿わせる
+      const straight = L < chord * 1.08;
+      const line = straight ? [a, b] : smooth([a, ...resample(px, Math.min(f.iw, f.ih) * 0.012), b], 0.6);
+      const len = pathLen(line);
+      // 数と大きさは線の長さから自動で決める（同じ大きさ・等間隔・重ならない）
+      const room = Math.max(1, deps.maxCells - cells.length);
+      const n = Math.max(1, Math.min(room, Math.round(len / (Math.min(f.iw, f.ih) * 0.2))));
+      const centers = Array.from({ length: n }, (_, i) => pointAt(line, ((i + 0.5) / n) * len));
+      const sz = Math.min(Math.min(f.iw, f.ih) * 0.45, fitSize(centers, (len / n) * 0.9));
+      return centers.map((p) => makeShape(kind, p.x, p.y, sz, sz).map(fromPx));
+    }
     // それ以外：なぞった範囲に1つ
     return [makeShape(kind, (bb.x0 + bb.x1) / 2, (bb.y0 + bb.y1) / 2, Math.max(bw, unit * 0.2), Math.max(bh, unit * 0.2)).map(fromPx)];
   }
@@ -720,9 +820,21 @@ export function initCustomEditor(deps: EditorDeps) {
   q<HTMLInputElement>('#edSmooth').addEventListener('input', () => {
     smoothness = Number(q<HTMLInputElement>('#edSmooth').value);
   });
-  q<HTMLInputElement>('#edSize').addEventListener('input', () => {
-    size = Number(q<HTMLInputElement>('#edSize').value);
-  });
+  // 自動配置：写真の枚数ぶん、選んだ図形を規則的に並べる（いまのマスは置き換え）
+  root.querySelectorAll<HTMLButtonElement>('[data-pat]').forEach((b) =>
+    b.addEventListener(
+      'click',
+      act(() => {
+        const kind = (tool === 'select' || tool === 'knife' ? 'circle' : tool) as ShapeKind;
+        const f = frame();
+        const n = Math.max(1, Math.min(deps.maxCells, deps.photos().length));
+        const { c, s: s0 } = patternCenters(b.dataset.pat as Pattern, n, f.iw, f.ih);
+        const sz = fitSize(c, s0);
+        cells = c.map((p) => makeShape(kind, p.x, p.y, sz, sz).map(fromPx));
+        sel = -1;
+      }),
+    ),
+  );
   q<HTMLSelectElement>('#edTpl').addEventListener('change', () => {
     const v = q<HTMLSelectElement>('#edTpl').value;
     if (!v) return;
@@ -790,7 +902,6 @@ export function initCustomEditor(deps: EditorDeps) {
     dirty = false;
     tool = c ? 'select' : 'knife';
     q<HTMLInputElement>('#edName').value = c ? c.name : `カスタム ${new Date().getMonth() + 1}/${new Date().getDate()}`;
-    q<HTMLInputElement>('#edSize').value = String(size);
     q<HTMLInputElement>('#edSmooth').value = String(smoothness);
     q('#edRemove').hidden = !c;
     const sel2 = q<HTMLSelectElement>('#edTpl');

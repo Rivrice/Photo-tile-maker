@@ -825,3 +825,11 @@ body.editing { overflow: hidden; }
 .ed-cutmode { margin: 0; flex: none; width: 112px; }
 .ed-cutmode button { padding: 6px 0; }
 @media (max-width: 900px) { .ed-cutmode button { min-height: 36px; } }
+
+/* 自動配置のボタン */
+.ed-auto { display: flex; align-items: center; gap: 4px; flex: 1; min-width: 0; overflow-x: auto; font-size: 12px; color: var(--muted); }
+.ed-auto[hidden] { display: none; }
+.ed-auto span { flex: none; margin-right: 2px; }
+.ed-auto button { flex: none; height: 32px; padding: 0 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
+.ed-auto button:active { border-color: var(--accent); color: var(--accent); }
+@media (max-width: 900px) { .ed-auto button { height: 36px; } .ed-opts { flex-wrap: wrap; } .ed-auto { flex-basis: 100%; order: -1; } }
