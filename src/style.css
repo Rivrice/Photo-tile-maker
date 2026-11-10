@@ -27,7 +27,8 @@ html, body { margin: 0; height: 100%; }
 body {
   background: var(--bg);
   color: var(--text);
-  font: 14px/1.5 Inter, 'Noto Sans JP', system-ui, sans-serif;
+  font: 14px/1.5 Inter, 'Noto Sans JP Variable', 'Noto Sans JP', 'Hiragino Sans', sans-serif;
+  -webkit-font-smoothing: antialiased;
   display: flex;
   flex-direction: column;
 }
@@ -673,13 +674,13 @@ body.dragging, body.dragging * { -webkit-user-select: none; user-select: none; }
 
 /* 全画面ボタン（プレビューの右上） */
 .stage-tools { position: relative; }
-.icon-btn {
+.stage-btn {
   position: absolute; right: 12px; top: 50%; transform: translateY(-50%); margin-top: 5px; width: 36px; height: 36px; border-radius: 50%;
   border: 1px solid var(--line); background: var(--panel); color: inherit; display: flex; align-items: center; justify-content: center; cursor: pointer;
 }
-.icon-btn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-.icon-btn:hover { border-color: var(--accent); }
-@media (max-width: 900px) { .icon-btn { margin-top: -3px; width: 34px; height: 34px; } }
+.stage-btn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.stage-btn:hover { border-color: var(--accent); }
+@media (max-width: 900px) { .stage-btn { margin-top: -3px; width: 34px; height: 34px; } }
 
 /* 全画面表示 */
 .viewer-title {
@@ -731,3 +732,21 @@ body.dragging, body.dragging * { -webkit-user-select: none; user-select: none; }
   .range-row { grid-template-columns: 44px 1fr 44px; }
   .range-row .step { width: 44px; height: 40px; }
 }
+
+/* 記号はアイコンで描いて、書体による見た目のばらつきをなくす */
+.range-row .step { display: flex; align-items: center; justify-content: center; padding: 0; }
+.range-row .step svg, .viewer-close svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.viewer-close { display: flex; align-items: center; justify-content: center; padding: 0; }
+.viewer-close svg { width: 20px; height: 20px; }
+.sw-name::after { font-family: inherit; }
+
+/* トラックパッド：中心の十字と、動かせない方向の表示 */
+.trackpad::before, .trackpad::after { content: ''; position: absolute; background: var(--muted); opacity: .35; pointer-events: none; }
+.trackpad::before { left: 50%; top: 10px; bottom: 10px; width: 1px; }
+.trackpad::after { top: 50%; left: 10px; right: 10px; height: 1px; }
+.trackpad.lock-x.lock-y .tp-dot { opacity: .35; }
+.pos-slider input:disabled { opacity: .35; }
+@media (max-width: 900px) { .trackpad { height: 140px; } }
+.trackpad { background-image: none; }
+.tp-hint { display: none; margin: -6px 0 12px; text-align: center; font-size: 12px; color: var(--muted); }
+@media (max-width: 900px) { .tp-hint { display: block; } }

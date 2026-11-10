@@ -17,6 +17,7 @@
     "@capacitor/core": "^8.6.0",
     "@capacitor/filesystem": "^8.1.5",
     "@capacitor/share": "^8.0.3",
+    "@fontsource-variable/noto-sans-jp": "^5.3.1",
     "@fontsource/inter": "^5.3.0",
     "exifr": "^7.1.3"
   },
