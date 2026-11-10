@@ -105,6 +105,8 @@ export interface Settings {
   overlay: OverlayMode;
   overlayColor: string;
   showLabel: boolean;
+  /** 検出精度が低い（50%以下）写真にも、自動検出の構図を表示する */
+  showLowConf: boolean;
   smartCrop: boolean;
   format: 'image/jpeg' | 'image/png' | 'image/webp';
   quality: number;

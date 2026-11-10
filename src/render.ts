@@ -4,6 +4,8 @@ import type { CompType, PhotoItem, Pt, Settings, Tile } from './types';
 
 type Drawable = CanvasImageSource & { width: number; height: number };
 const PHI = 0.6180339887;
+/** これ以下の検出精度は「低い」とみなす */
+export const LOW_CONF = 0.5;
 
 export interface Crop {
   sx: number;
@@ -396,7 +398,9 @@ export function drawScene(x: CanvasRenderingContext2D, o: SceneOptions) {
     const tilePath = new Path2D();
     roundedPath(tilePath, clip, o.rounded ? st.radius * k : 0);
 
-    const type = effectiveComp(p);
+    // 自動検出で精度が低い（50%以下）写真は、設定で許可したときだけ構図を描く
+    const lowConf = p.compOverride == null && p.comp.score <= LOW_CONF && !st.showLowConf;
+    const type = lowConf ? 'none' : effectiveComp(p);
     const cutout = st.overlay === 'cutout' && type !== 'none';
     const map = (u: number, v: number) => ({
       x: ((u * p.width - crop.sx) / crop.sw - 0.5) * bw,

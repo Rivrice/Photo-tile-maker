@@ -7,7 +7,7 @@ import './style.css';
 import { COMP_LABELS, rgbToHsl } from './analyze';
 import { LAYOUTS, getLayout, pointInTile } from './layouts';
 import { ACCEPT, MAX_PHOTOS, extractRegion, loadPhoto, makeSamples } from './photos';
-import { IS_IOS, canvasToBlob, cropFor, drawScene, effectiveComp, photoBox, type Crop } from './render';
+import { IS_IOS, LOW_CONF, canvasToBlob, cropFor, drawScene, effectiveComp, photoBox, type Crop } from './render';
 import { IS_NATIVE, nativeSave, nativeShare, onBackButton } from './native';
 import type { CompType, OverlayMode, PhotoItem, Settings, Tile } from './types';
 
@@ -27,6 +27,7 @@ const DEFAULTS: Settings = {
   overlay: 'none',
   overlayColor: '#ffffff',
   showLabel: false,
+  showLowConf: false,
   smartCrop: true,
   format: 'image/jpeg',
   quality: 0.92,
@@ -1300,7 +1301,8 @@ function renderSelPanel() {
   $('#selName').textContent = p.name;
   const auto = COMP_LABELS[p.comp.type];
   const pct = Math.round(p.comp.score * 100);
-  $('#selComp').innerHTML = `${auto}<small>検出精度 ${pct}%</small>`;
+  const hiddenLow = p.compOverride == null && p.comp.score <= LOW_CONF && !settings.showLowConf;
+  $('#selComp').innerHTML = `${auto}<small>検出精度 ${pct}%${hiddenLow ? '（低いため図形は非表示）' : ''}</small>`;
   $('#selColors').innerHTML = p.stats.palette.map((c) => `<i style="background:${c}"></i>`).join('');
   $<HTMLSelectElement>('#selType').value = p.compOverride ?? 'auto';
   // 構図を手動で選んだときだけ「図形の操作」タブを出す
@@ -1420,6 +1422,7 @@ function syncControls() {
   $$('#overlaySeg button').forEach((b) => b.classList.toggle('active', b.dataset.ov === settings.overlay));
   $('#overlayHint').textContent = OVERLAY_HINTS[settings.overlay];
   $<HTMLInputElement>('#showLabel').checked = settings.showLabel;
+  $<HTMLInputElement>('#showLowConf').checked = settings.showLowConf;
   $<HTMLInputElement>('#smartCrop').checked = settings.smartCrop;
   $<HTMLSelectElement>('#format').value = settings.format;
   $<HTMLSelectElement>('#outEdge').value = String(settings.outEdge);
@@ -1459,6 +1462,12 @@ $$('#overlaySeg button').forEach((b) =>
 $('#showLabel').addEventListener('change', () => {
   settings.showLabel = $<HTMLInputElement>('#showLabel').checked;
   saveSettings();
+  render();
+});
+$('#showLowConf').addEventListener('change', () => {
+  settings.showLowConf = $<HTMLInputElement>('#showLowConf').checked;
+  saveSettings();
+  renderSelPanel();
   render();
 });
 $('#smartCrop').addEventListener('change', () => {
