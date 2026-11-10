@@ -818,3 +818,10 @@ body.editing { overflow: hidden; }
   .ed-tools { max-width: 560px; margin: 0 auto 12px; border: 1px solid var(--line); border-radius: 14px; width: 100%; }
   .ed-opts, .ed-hint { max-width: 760px; margin-left: auto; margin-right: auto; width: 100%; }
 }
+/* 区切る：直線／曲線と滑らかさ */
+.ed-opts .ed-size[hidden], .ed-cut[hidden] { display: none; }
+.ed-acts { margin-left: auto; }
+.ed-cut { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
+.ed-cutmode { margin: 0; flex: none; width: 112px; }
+.ed-cutmode button { padding: 6px 0; }
+@media (max-width: 900px) { .ed-cutmode button { min-height: 36px; } }

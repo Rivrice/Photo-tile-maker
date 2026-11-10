@@ -47,7 +47,7 @@ const TOOLS: { id: Tool; name: string }[] = [
 ];
 const HINTS: Record<Tool, string> = {
   select: 'マスをタップして選び、ドラッグで移動。右下の丸をドラッグで大きさを変えます。',
-  knife: 'なぞった線に沿って、マスを区切ります。曲がった線なら、折れ線で区切ります。',
+  knife: 'なぞった線に沿って、マスを区切ります。直線はまっすぐ、曲線はなぞった形のまま区切ります。',
   rect: 'ドラッグした範囲に置きます。長い線や曲線をなぞると、線に沿って並べます。',
   circle: 'ドラッグした範囲に置きます。長い線や曲線をなぞると、線に沿って並べます。',
   tri: 'ドラッグした範囲に置きます。長い線や曲線をなぞると、線に沿って並べます。',
@@ -90,38 +90,134 @@ function inside(poly: Pt[], x: number, y: number) {
   }
   return r;
 }
-/** 凸多角形を、直線 AB の左右に分ける */
-function splitPoly(poly: Pt[], a: Pt, b: Pt): [Pt[], Pt[]] {
-  const side = (p: Pt) => (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
-  const L: Pt[] = [], R: Pt[] = [];
-  for (let i = 0; i < poly.length; i++) {
-    const p = poly[i], q = poly[(i + 1) % poly.length];
-    const sp = side(p), sq = side(q);
-    if (sp >= 0) L.push(p);
-    if (sp <= 0) R.push(p);
-    if ((sp > 0 && sq < 0) || (sp < 0 && sq > 0)) {
-      const t = sp / (sp - sq);
-      const m = { x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t };
-      L.push(m);
-      R.push(m);
+interface Cross {
+  /** 線（折れ線）に沿った距離 */
+  s: number;
+  /** 多角形の外周上の位置（辺の番号 + 辺の中の割合） */
+  pos: number;
+  p: Pt;
+}
+/** 折れ線と多角形の外周の交点を、線に沿った順に並べる */
+function crossings(poly: Pt[], path: Pt[]): Cross[] {
+  const out: Cross[] = [];
+  let acc = 0;
+  const n = poly.length;
+  for (let k = 0; k + 1 < path.length; k++) {
+    const a = path[k], b = path[k + 1];
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const segL = Math.hypot(dx, dy);
+    for (let i = 0; i < n; i++) {
+      const c = poly[i], d = poly[(i + 1) % n];
+      const ex = d.x - c.x, ey = d.y - c.y;
+      const den = dx * ey - dy * ex;
+      if (Math.abs(den) < 1e-12) continue;
+      const t = ((c.x - a.x) * ey - (c.y - a.y) * ex) / den;
+      const u = ((c.x - a.x) * dy - (c.y - a.y) * dx) / den;
+      if (t < 0 || t >= 1 || u < 0 || u >= 1) continue;
+      out.push({ s: acc + t * segL, pos: i + u, p: { x: a.x + dx * t, y: a.y + dy * t } });
     }
+    acc += segL;
   }
-  return [L, R];
+  return out.sort((x, y) => x.s - y.s);
 }
-function segCross(a: Pt, b: Pt, c: Pt, d: Pt) {
-  const o = (p: Pt, q: Pt, r: Pt) => (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
-  return o(a, b, c) * o(a, b, d) < 0 && o(c, d, a) * o(c, d, b) < 0;
+/** 外周を位置 a から b まで進むときに通る頂点 */
+function walk(poly: Pt[], a: number, b: number): Pt[] {
+  const n = poly.length;
+  const end = b < a ? b + n : b;
+  const out: Pt[] = [];
+  for (let k = Math.floor(a) + 1; k <= end; k++) out.push(poly[k % n]);
+  return out;
 }
-/** 線分 AB が多角形の内側を通る長さの割合（0..1）。端をかすめただけの線では区切らないために使う */
-function segInside(poly: Pt[], a: Pt, b: Pt) {
-  let hit = inside(poly, a.x, a.y) || inside(poly, b.x, b.y);
-  for (let i = 0; !hit && i < poly.length; i++) if (segCross(a, b, poly[i], poly[(i + 1) % poly.length])) hit = true;
-  if (!hit) return 0;
-  const N = 48;
-  let n = 0;
-  for (let i = 0; i <= N; i++) if (inside(poly, a.x + ((b.x - a.x) * i) / N, a.y + ((b.y - a.y) * i) / N)) n++;
-  return n / (N + 1);
+/** 折れ線上の距離 s の点 */
+function pointAt(path: Pt[], s: number): Pt {
+  let acc = 0;
+  for (let k = 0; k + 1 < path.length; k++) {
+    const a = path[k], b = path[k + 1];
+    const l = Math.hypot(b.x - a.x, b.y - a.y);
+    if (acc + l >= s) {
+      const t = l ? (s - acc) / l : 0;
+      return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+    }
+    acc += l;
+  }
+  return path[path.length - 1];
 }
+/** 折れ線の s1〜s2 の部分 */
+function subPath(path: Pt[], s1: number, s2: number): Pt[] {
+  const out = [pointAt(path, s1)];
+  let acc = 0;
+  for (let k = 0; k + 1 < path.length; k++) {
+    acc += Math.hypot(path[k + 1].x - path[k].x, path[k + 1].y - path[k].y);
+    if (acc > s1 && acc < s2) out.push(path[k + 1]);
+  }
+  out.push(pointAt(path, s2));
+  return out;
+}
+
+interface CutOpts {
+  /** なぞった線そのもの（延長部分を除く）の範囲 */
+  from: number;
+  to: number;
+  /** マスの中を通る長さがこれ未満なら切らない */
+  minIn: number;
+  /** これより小さいかけらができるなら切らない */
+  minArea: number;
+}
+/**
+ * 多角形（凹でも可）を、線に沿って切る。線がマスを何度も横切るときは、続きの線でさらに切る。
+ * 結果のかけらを返す（切れなければ元のまま）。
+ */
+function cutPoly(poly: Pt[], path: Pt[], o: CutOpts, depth = 0): Pt[][] {
+  if (depth > 6) return [poly];
+  const cs = crossings(poly, path);
+  for (let j = 0; j + 1 < cs.length; j++) {
+    const c1 = cs[j], c2 = cs[j + 1];
+    if (c2.s - c1.s < 1e-6) continue;
+    const mid = pointAt(path, (c1.s + c2.s) / 2);
+    if (!inside(poly, mid.x, mid.y)) continue;
+    // なぞった部分がマスの中を十分に通っているか
+    const own = Math.min(c2.s, o.to) - Math.max(c1.s, o.from);
+    if (own < o.minIn) continue;
+    const sub = subPath(path, c1.s, c2.s);
+    const A = [...sub, ...walk(poly, c2.pos, c1.pos)];
+    const B = [...sub.slice().reverse(), ...walk(poly, c1.pos, c2.pos)];
+    if (Math.abs(area(A)) < o.minArea || Math.abs(area(B)) < o.minArea) continue;
+    // 線の続きで、できたかけらをさらに切る
+    const rest = { ...o, from: Math.max(o.from, c2.s) - c2.s, to: o.to - c2.s };
+    const tail = subPath(path, c2.s, pathLen(path));
+    if (rest.to - Math.max(0, rest.from) < o.minIn || tail.length < 2) return [A, B];
+    return [...cutPoly(A, tail, rest, depth + 1), ...cutPoly(B, tail, rest, depth + 1)];
+  }
+  return [poly];
+}
+/** 線を滑らかにする（移動平均）。amount 0..1 */
+function smooth(pts: Pt[], amount: number): Pt[] {
+  const w = Math.round(amount * 10);
+  if (w < 1 || pts.length < 3) return pts;
+  return pts.map((_, i) => {
+    if (i === 0 || i === pts.length - 1) return pts[i];
+    const r = Math.min(w, i, pts.length - 1 - i);
+    let x = 0, y = 0;
+    for (let k = i - r; k <= i + r; k++) {
+      x += pts[k].x;
+      y += pts[k].y;
+    }
+    return { x: x / (r * 2 + 1), y: y / (r * 2 + 1) };
+  });
+}
+/** 両端を、線の向きに長く延ばす（マスの端まで届かせる） */
+function extend(pts: Pt[], len: number): Pt[] {
+  const n = pts.length;
+  const dir = (a: Pt, b: Pt) => {
+    const l = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    return { x: (b.x - a.x) / l, y: (b.y - a.y) / l };
+  };
+  // 端の向きは、少し内側の点から取る（指のぶれを拾わない）
+  const k = Math.min(n - 1, Math.max(1, Math.floor(n / 8)));
+  const d0 = dir(pts[k], pts[0]), d1 = dir(pts[n - 1 - k], pts[n - 1]);
+  return [{ x: pts[0].x + d0.x * len, y: pts[0].y + d0.y * len }, ...pts, { x: pts[n - 1].x + d1.x * len, y: pts[n - 1].y + d1.y * len }];
+}
+
 /** 折れ線の単純化（Ramer–Douglas–Peucker） */
 function simplify(pts: Pt[], eps: number): Pt[] {
   if (pts.length < 3) return pts;
@@ -205,6 +301,10 @@ export function initCustomEditor(deps: EditorDeps) {
     <p class="ed-hint" id="edHint"></p>
     <div class="ed-opts">
       <label class="ed-size" id="edSizeRow"><span>並べる大きさ</span><input id="edSize" type="range" min="0.06" max="0.5" step="0.01" /></label>
+      <div class="ed-cut" id="edCutRow">
+        <div class="seg2 ed-cutmode"><button data-cut="line">直線</button><button data-cut="curve">曲線</button></div>
+        <label class="ed-size" id="edSmoothRow"><span>滑らかさ</span><input id="edSmooth" type="range" min="0" max="1" step="0.05" /></label>
+      </div>
       <div class="ed-acts">
         <button class="ed-icon" id="edUndo" aria-label="元に戻す">${svg('undo')}</button>
         <button class="ed-icon" id="edRedo" aria-label="やり直す">${svg('redo')}</button>
@@ -225,6 +325,9 @@ export function initCustomEditor(deps: EditorDeps) {
   let sel = -1;
   let tool: Tool = 'knife';
   let size = 0.2;
+  // 区切る線：直線か曲線か、曲線の滑らかさ
+  let cutMode: 'line' | 'curve' = 'curve';
+  let smoothness = 0.5;
   let past: string[] = [];
   let future: string[] = [];
   let editingId: string | null = null;
@@ -275,6 +378,9 @@ export function initCustomEditor(deps: EditorDeps) {
     root.querySelectorAll<HTMLButtonElement>('#edTools button').forEach((b) => b.classList.toggle('active', b.dataset.tool === tool));
     q('#edHint').textContent = HINTS[tool];
     q('#edSizeRow').hidden = tool === 'select' || tool === 'knife';
+    q('#edCutRow').hidden = tool !== 'knife';
+    q('#edSmoothRow').hidden = cutMode !== 'curve';
+    root.querySelectorAll<HTMLButtonElement>('[data-cut]').forEach((b) => b.classList.toggle('active', b.dataset.cut === cutMode));
     q<HTMLButtonElement>('#edUndo').disabled = !past.length;
     q<HTMLButtonElement>('#edRedo').disabled = !future.length;
     for (const id of ['#edDup', '#edRot', '#edDel']) q<HTMLButtonElement>(id).disabled = sel < 0;
@@ -367,7 +473,7 @@ export function initCustomEditor(deps: EditorDeps) {
     }
     // なぞっている線
     if (stroke && stroke.length > 1) {
-      const pts = stroke.map(toScreen);
+      const pts = (tool === 'knife' ? cutPath(stroke) : stroke).map(toScreen);
       x.beginPath();
       pts.forEach((p, j) => (j ? x.lineTo(p.x, p.y) : x.moveTo(p.x, p.y)));
       x.lineWidth = 3;
@@ -422,36 +528,38 @@ export function initCustomEditor(deps: EditorDeps) {
     return [makeShape(kind, (bb.x0 + bb.x1) / 2, (bb.y0 + bb.y1) / 2, Math.max(bw, unit * 0.2), Math.max(bh, unit * 0.2)).map(fromPx)];
   }
 
-  /** なぞった線でマスを区切る */
+  /** 区切りに使う線（0..1）：直線なら始点と終点、曲線なら滑らかにした線 */
+  function cutPath(path: Pt[]): Pt[] {
+    if (cutMode === 'line' || path.length < 3) return [path[0], path[path.length - 1]];
+    const f = frame();
+    const unit = Math.min(f.iw, f.ih);
+    // 等間隔に取り直してから滑らかにし、点の数を減らす
+    const px = path.map(toPx);
+    const even = [px[0], ...resample(px, unit * 0.012), px[px.length - 1]];
+    return simplify(smooth(even, smoothness), unit * 0.003).map(fromPx);
+  }
+
+  /** なぞった線でマスを区切る（1本の線につき、通ったマスを1回ずつ） */
   function knife(path: Pt[]) {
     const f = frame();
-    const px = path.map(toPx);
-    if (pathLen(px) < Math.min(f.iw, f.ih) * 0.04) return 0;
-    const segs = simplify(px, Math.min(f.iw, f.ih) * 0.025).map(fromPx);
+    const unit = Math.min(f.iw, f.ih);
+    const px0 = cutPath(path).map(toPx);
+    const L = pathLen(px0);
+    if (L < unit * 0.04) return 0;
+    // 線の両端を延ばして、マスの端まで届かせる（ただし、なぞった部分が通ったマスだけを切る）
+    const E = Math.max(f.iw, f.ih) * 3;
+    const px = extend(px0, E);
+    const opts: CutOpts = { from: E, to: E + L, minIn: unit * 0.06, minArea: f.iw * f.ih * 0.012 };
+    const out: Pt[][] = [];
     let made = 0;
-    for (let i = 1; i < segs.length; i++) {
-      const a = segs[i - 1], b = segs[i];
-      const segLen = Math.hypot((b.x - a.x) * f.iw, (b.y - a.y) * f.ih);
-      if (segLen < 4) continue;
-      // マスの中を通る長さが、短辺の 3% 未満なら区切らない（線の端がはみ出しただけ）
-      const minIn = Math.min(f.iw, f.ih) * 0.03;
-      const out: Pt[][] = [];
-      let count = cells.length;
-      for (const c of cells) {
-        if (count >= deps.maxCells || segInside(c, a, b) * segLen < minIn) {
-          out.push(c);
-          continue;
-        }
-        const [l, r] = splitPoly(c, a, b);
-        const tiny = Math.abs(area(c)) * 0.01;
-        if (Math.abs(area(l)) > tiny && Math.abs(area(r)) > tiny) {
-          out.push(l, r);
-          count++;
-          made++;
-        } else out.push(c);
-      }
-      cells = out;
+    for (const c of cells) {
+      const pieces = out.length + (cells.length - out.length) < deps.maxCells ? cutPoly(c.map(toPx), px, opts) : [c.map(toPx)];
+      const room = deps.maxCells - (cells.length + made);
+      const use = pieces.length - 1 <= room ? pieces : [c.map(toPx)];
+      made += use.length - 1;
+      out.push(...use.map((p) => p.map(fromPx)));
     }
+    cells = out;
     return made;
   }
 
@@ -603,6 +711,15 @@ export function initCustomEditor(deps: EditorDeps) {
       sel = -1;
     }),
   );
+  root.querySelectorAll<HTMLButtonElement>('[data-cut]').forEach((b) =>
+    b.addEventListener('click', () => {
+      cutMode = b.dataset.cut as 'line' | 'curve';
+      syncUI();
+    }),
+  );
+  q<HTMLInputElement>('#edSmooth').addEventListener('input', () => {
+    smoothness = Number(q<HTMLInputElement>('#edSmooth').value);
+  });
   q<HTMLInputElement>('#edSize').addEventListener('input', () => {
     size = Number(q<HTMLInputElement>('#edSize').value);
   });
@@ -674,6 +791,7 @@ export function initCustomEditor(deps: EditorDeps) {
     tool = c ? 'select' : 'knife';
     q<HTMLInputElement>('#edName').value = c ? c.name : `カスタム ${new Date().getMonth() + 1}/${new Date().getDate()}`;
     q<HTMLInputElement>('#edSize').value = String(size);
+    q<HTMLInputElement>('#edSmooth').value = String(smoothness);
     q('#edRemove').hidden = !c;
     const sel2 = q<HTMLSelectElement>('#edTpl');
     sel2.innerHTML =
