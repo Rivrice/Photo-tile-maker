@@ -803,7 +803,6 @@ body.editing { overflow: hidden; }
 .ed-hint { margin: 0; padding: 0 16px 6px; font-size: 12px; color: var(--muted); text-align: center; min-height: 2.6em; }
 .ed-opts { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 0 12px 8px; }
 .ed-size { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); flex: 1; min-width: 0; }
-.ed-size[hidden] { visibility: hidden; display: flex; }
 .ed-size input { flex: 1; min-width: 60px; }
 .ed-acts { display: flex; gap: 6px; }
 .ed-tools { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; padding: 6px 8px 8px; background: var(--panel); border-top: 1px solid var(--line); }
@@ -832,4 +831,28 @@ body.editing { overflow: hidden; }
 .ed-auto span { flex: none; margin-right: 2px; }
 .ed-auto button { flex: none; height: 32px; padding: 0 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
 .ed-auto button:active { border-color: var(--accent); color: var(--accent); }
-@media (max-width: 900px) { .ed-auto button { height: 36px; } .ed-opts { flex-wrap: wrap; } .ed-auto { flex-basis: 100%; order: -1; } }
+@media (max-width: 900px) { .ed-auto button { height: 36px; } }
+
+/* 作成画面の下部：道具ごとの設定と、操作ボタン */
+.ed-toolopt { display: flex; align-items: center; flex: 1; min-width: 0; }
+.ed-size span, .ed-auto span { white-space: nowrap; flex: none; }
+.ed-size input { min-width: 80px; }
+.ed-acts { flex: none; }
+@media (max-width: 900px) {
+  /* スマホでは2段にする：上に道具の設定（高さは固定して、道具を変えても画面が動かない）、下に操作ボタン */
+  .ed-opts { flex-wrap: wrap; row-gap: 6px; }
+  .ed-toolopt { flex-basis: 100%; min-height: 40px; }
+  .ed-acts { margin-left: 0; width: 100%; justify-content: space-between; }
+  .ed-acts .ed-icon { flex: 1; max-width: 64px; }
+}
+
+/* レイアウト一覧：列の幅をそろえ、サムネイルを枠に収める */
+.presets { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.preset { min-width: 0; }
+.preset .pv { position: relative; }
+.preset .pv canvas { position: absolute; inset: 0; margin: auto; max-width: 100%; max-height: 100%; }
+@media (max-width: 900px) {
+  .presets { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  /* 下部タブ：文字が2行に折れないように */
+  .tabbar button { min-width: 0; white-space: nowrap; letter-spacing: -0.02em; }
+}
