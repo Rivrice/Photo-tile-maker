@@ -34,7 +34,6 @@ const ICON: Record<string, string> = {
   rot: '<path d="M20 12a8 8 0 1 1-2.3-5.7"/><path d="M20 4v5h-5"/>',
   del: '<path d="M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13"/>',
   close: '<path d="M6 6l12 12M18 6 6 18"/>',
-  align: '<rect x="4" y="4" width="6.5" height="6.5" rx="1"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1"/>',
 };
 const svg = (k: string) => `<svg viewBox="0 0 24 24" aria-hidden="true">${ICON[k]}</svg>`;
 
@@ -48,11 +47,11 @@ const TOOLS: { id: Tool; name: string }[] = [
 ];
 const HINTS: Record<Tool, string> = {
   select: 'マスをタップして選び、ドラッグで移動。右下の丸で大きさ、上の丸で角度を変えます。',
-  knife: 'なぞった線に沿って、マスを区切ります。直線はまっすぐ、曲線はなぞった形のまま区切ります。',
-  rect: 'ドラッグした範囲に置きます（タップで標準の大きさ）。置いたあとは「整列」でそろえられます。',
-  circle: 'ドラッグした範囲に置きます（タップで標準の大きさ）。置いたあとは「整列」でそろえられます。',
-  tri: 'ドラッグした範囲に置きます（タップで標準の大きさ）。置いたあとは「整列」でそろえられます。',
-  hex: 'ドラッグした範囲に置きます（タップで標準の大きさ）。置いたあとは「整列」でそろえられます。',
+  knife: 'なぞった線でマスを区切ります。直線はまっすぐ、曲線はなぞった形のまま区切ります。',
+  rect: 'ドラッグした範囲をこの形で区切ります（タップで標準の大きさ）。囲んだ部分が1つのマスになります。',
+  circle: 'ドラッグした範囲をこの形で区切ります（タップで標準の大きさ）。囲んだ部分が1つのマスになります。',
+  tri: 'ドラッグした範囲をこの形で区切ります（タップで標準の大きさ）。囲んだ部分が1つのマスになります。',
+  hex: 'ドラッグした範囲をこの形で区切ります（タップで標準の大きさ）。囲んだ部分が1つのマスになります。',
 };
 
 // ---------- 幾何 ----------
@@ -342,95 +341,6 @@ function makeShape(kind: ShapeKind, cx: number, cy: number, w: number, h: number
   }
 }
 
-type Pattern = 'grid' | 'stagger' | 'ring' | 'mount' | 'wave';
-const PATTERNS: { id: Pattern; name: string }[] = [
-  { id: 'grid', name: '格子' },
-  { id: 'stagger', name: '千鳥' },
-  { id: 'ring', name: '円形' },
-  { id: 'mount', name: '山形' },
-  { id: 'wave', name: '波' },
-];
-/** 図形どうしの中心の間隔（図形の大きさ 1 に対して） */
-const GAP = 1.16;
-/** 行ごとの個数から、中央そろえの並びを作る（大きさ 1 の図形の中心） */
-function rowsOf(counts: number[], dy: number, shift = 0): Pt[] {
-  const out: Pt[] = [];
-  counts.forEach((k, r) => {
-    const off = shift && r % 2 ? shift : 0;
-    for (let i = 0; i < k; i++) out.push({ x: (i - (k - 1) / 2) * GAP + off, y: r * dy });
-  });
-  return out;
-}
-/** 四角でも重ならないよう、どの2つも縦か横に GAP 以上離れるように広げる */
-function spread(c: Pt[]): Pt[] {
-  let d = Infinity;
-  for (let i = 0; i < c.length; i++)
-    for (let j = i + 1; j < c.length; j++) d = Math.min(d, Math.max(Math.abs(c[i].x - c[j].x), Math.abs(c[i].y - c[j].y)));
-  const k = d > 1e-9 && d < Infinity ? GAP / d : 1;
-  return c.map((p) => ({ x: p.x * k, y: p.y * k }));
-}
-/** 大きさ 1 の図形の並びを、枠いっぱい・中央に収める */
-function fitInto(c: Pt[], w: number, h: number): { c: Pt[]; s: number } {
-  const b = bbox(c);
-  const bw = b.x1 - b.x0 + 1, bh = b.y1 - b.y0 + 1;
-  const k = Math.min((w * 0.92) / bw, (h * 0.92) / bh);
-  const mx = (b.x0 + b.x1) / 2, my = (b.y0 + b.y1) / 2;
-  return { c: c.map((p) => ({ x: w / 2 + (p.x - mx) * k, y: h / 2 + (p.y - my) * k })), s: k };
-}
-/** 候補の中から、図形がいちばん大きくなるものを選ぶ */
-function best(cands: Pt[][], w: number, h: number) {
-  let out = fitInto(cands[0], w, h);
-  for (const c of cands.slice(1)) {
-    const f = fitInto(c, w, h);
-    if (f.s > out.s + 1e-9) out = f;
-  }
-  return out;
-}
-/** 格子の行ごとの個数（列数 cols。端数の行は真ん中に） */
-function gridRows(n: number, cols: number) {
-  const rows = Math.ceil(n / cols);
-  return Array.from({ length: rows }, (_, r) => (r < rows - 1 ? cols : n - cols * (rows - 1)));
-}
-/** 規則的な配置：中心点と大きさ（幅 w・高さ h の枠の中。上下左右とも中央そろえ） */
-function patternCenters(p: Pattern, n: number, w: number, h: number): { c: Pt[]; s: number } {
-  if (n <= 1) return fitInto([{ x: 0, y: 0 }], w, h);
-  const cols = Array.from({ length: n }, (_, i) => i + 1);
-  switch (p) {
-    case 'grid':
-      return best(cols.map((k) => rowsOf(gridRows(n, k), GAP)), w, h);
-    case 'stagger':
-      // 1行おきに半分ずらす
-      return best(cols.filter((k) => k < n).map((k) => rowsOf(gridRows(n, k), GAP * 0.87, GAP / 2)), w, h);
-    case 'ring': {
-      const c = Array.from({ length: n }, (_, i) => {
-        const a = -Math.PI / 2 + (i / n) * Math.PI * 2;
-        return { x: Math.cos(a), y: Math.sin(a) };
-      });
-      return fitInto(spread(c), w, h);
-    }
-    case 'mount': {
-      // 上から 1, 2, 3… と増やす（あまりは一番下の行へ）
-      const table: Record<number, number[]> = { 2: [1, 1], 3: [1, 2], 4: [1, 3], 5: [2, 3], 6: [1, 2, 3] };
-      const counts: number[] = table[n] ? [...table[n]] : [];
-      let left = table[n] ? 0 : n;
-      for (let k = 1; left > 0; k++) {
-        if (left - k < k + 1 && left - k > 0) {
-          counts.push(left);
-          break;
-        }
-        counts.push(Math.min(k, left));
-        left -= k;
-      }
-      return fitInto(rowsOf(counts, GAP * 0.87), w, h);
-    }
-    case 'wave': {
-      // ジグザグに1列。枠の長い向きに並べる
-      const line = spread(Array.from({ length: n }, (_, i) => ({ x: (i - (n - 1) / 2) * 0.6, y: i % 2 ? 0.5 : -0.5 })));
-      return best([line, line.map((q) => ({ x: q.y, y: q.x }))], w, h);
-    }
-  }
-}
-
 // ---------- 画面 ----------
 
 export function initCustomEditor(deps: EditorDeps) {
@@ -454,14 +364,12 @@ export function initCustomEditor(deps: EditorDeps) {
     <div class="ed-opts">
       <div class="ed-toolopt">
       <button class="ed-chip" id="edLock" aria-pressed="true" aria-label="縦横比ロック" title="縦横比ロック"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>縦横比</button>
-      <div class="ed-auto" id="edSizeRow"><span>自動配置</span>${PATTERNS.map((p) => `<button data-pat="${p.id}">${p.name}</button>`).join('')}</div>
       <div class="ed-cut" id="edCutRow">
         <div class="seg2 ed-cutmode"><button data-cut="line">直線</button><button data-cut="curve">曲線</button></div>
         <label class="ed-size" id="edSmoothRow"><span>滑らかさ</span><input id="edSmooth" type="range" min="0" max="1" step="0.05" /></label>
       </div>
       </div>
       <div class="ed-acts">
-        <button class="ed-icon" id="edAlign" aria-label="整列" title="整列">${svg('align')}</button>
         <button class="ed-icon" id="edUndo" aria-label="元に戻す">${svg('undo')}</button>
         <button class="ed-icon" id="edRedo" aria-label="やり直す">${svg('redo')}</button>
         <button class="ed-icon" id="edDup" aria-label="複製">${svg('dup')}</button>
@@ -560,11 +468,9 @@ export function initCustomEditor(deps: EditorDeps) {
   function syncUI() {
     root.querySelectorAll<HTMLButtonElement>('#edTools button').forEach((b) => b.classList.toggle('active', b.dataset.tool === tool));
     q('#edHint').textContent = HINTS[tool];
-    q('#edSizeRow').hidden = tool === 'select' || tool === 'knife';
     q('#edLock').hidden = tool === 'knife';
     q('#edLock').classList.toggle('active', lockAspect);
     q('#edLock').setAttribute('aria-pressed', String(lockAspect));
-    q<HTMLButtonElement>('#edAlign').disabled = cells.length < 2;
     q('#edCutRow').hidden = tool !== 'knife';
     q('#edSmoothRow').hidden = cutMode !== 'curve';
     root.querySelectorAll<HTMLButtonElement>('[data-cut]').forEach((b) => b.classList.toggle('active', b.dataset.cut === cutMode));
@@ -708,11 +614,16 @@ export function initCustomEditor(deps: EditorDeps) {
       x.beginPath();
       sp.forEach((p, j) => (j ? x.lineTo(p.x, p.y) : x.moveTo(p.x, p.y)));
       x.closePath();
-      x.fillStyle = 'rgba(232,121,43,.22)';
+      x.fillStyle = 'rgba(232,121,43,.18)';
       x.fill();
-      x.lineWidth = 1.5;
-      x.strokeStyle = '#e8792b';
+      x.lineWidth = 3;
+      x.strokeStyle = 'rgba(255,255,255,.9)';
       x.stroke();
+      x.lineWidth = 1.6;
+      x.strokeStyle = '#e8792b';
+      x.setLineDash([6, 4]);
+      x.stroke();
+      x.setLineDash([]);
     }
   }
 
@@ -788,6 +699,92 @@ export function initCustomEditor(deps: EditorDeps) {
     cells = out;
     rots = outR;
     return { made, thin };
+  }
+
+  /** 凸多角形 S を、枠（0..iw, 0..ih）で切り取る */
+  function clipToFrame(S: Pt[]): Pt[] {
+    const f = frame();
+    const edges: [(p: Pt) => number][] = [[(p) => p.x], [(p) => f.iw - p.x], [(p) => p.y], [(p) => f.ih - p.y]];
+    let out = S;
+    for (const [fn] of edges) {
+      const inp = out;
+      out = [];
+      for (let i = 0; i < inp.length; i++) {
+        const a = inp[i], b = inp[(i + 1) % inp.length];
+        const da = fn(a), db = fn(b);
+        if (da >= 0) out.push(a);
+        if (da >= 0 !== db >= 0) {
+          const t = da / (da - db);
+          out.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+        }
+      }
+      if (!out.length) return [];
+    }
+    return out;
+  }
+
+  /**
+   * マス P から、図形 S（凸）と重なる部分を取り除いたかけら（ピクセル座標）。
+   * 切れないとき（細いかけらができるなど）は null。
+   */
+  function carveCell(P: Pt[], S: Pt[], o: Omit<CutOpts, 'from' | 'to'>, depth = 0): Pt[][] | null {
+    const sIn = S.map((v) => inside(P, v.x, v.y));
+    const pIn = P.map((v) => inside(S, v.x, v.y));
+    if (pIn.every(Boolean)) return []; // マスがまるごと図形の中
+    const k = sIn.findIndex((v) => !v);
+    if (k < 0) {
+      // 図形がマスの中にすっぽり入っているとき：図形の中心を通る横線でマスを上下に分けてから、それぞれを切る
+      if (depth > 0) return null;
+      const c = centroid(S);
+      const b = bbox(P);
+      const line = [{ x: b.x0 - 10, y: c.y }, { x: b.x1 + 10, y: c.y }];
+      const halves = cutPoly(P, line, { ...o, minArea: 0, minThick: 0, onThin: undefined, from: 0, to: pathLen(line) });
+      if (halves.length < 2) return null;
+      const out: Pt[][] = [];
+      for (const h of halves) {
+        const r = carveCell(h, S, o, depth + 1);
+        if (!r) return null;
+        out.push(...r);
+      }
+      return out;
+    }
+    // 図形の輪郭を、マスの外の点から1周する線にして切る
+    const loop = [...S.slice(k), ...S.slice(0, k), S[k]];
+    const pieces = cutPoly(P, loop, { ...o, from: 0, to: pathLen(loop) });
+    if (pieces.length < 2) {
+      // 切れなかった：重なっていなければそのまま、重なっていれば区切れない
+      const overlap = sIn.some(Boolean) || pIn.some(Boolean);
+      return overlap ? null : [P];
+    }
+    // 図形の内側のかけらは捨てる（図形そのものを1つのマスにする）
+    return pieces.filter((pc) => {
+      const lp = labelPoint(pc);
+      return !inside(S, lp.x, lp.y);
+    });
+  }
+
+  /** 図形で区切る：囲んだ範囲を1つのマスにし、重なっていたマスからはその部分を取り除く */
+  function carve(path: Pt[]): string | null {
+    const f = frame();
+    const unit = Math.min(f.iw, f.ih);
+    const S = clipToFrame(shapeFor(path).map(toPx));
+    if (S.length < 3 || Math.abs(area(S)) < f.iw * f.ih * 0.004) return '図形が小さすぎます';
+    const o = { minIn: unit * 0.01, minArea: f.iw * f.ih * 0.004, minThick: unit * 0.035 };
+    const out: Pt[][] = [];
+    const outR: number[] = [];
+    for (const [ci, c] of cells.entries()) {
+      const r = carveCell(c.map(toPx), S, o);
+      if (!r) return '細すぎるマスができるので区切れません。少し位置か大きさを変えてください';
+      const same = r.length === 1 && r[0].length === c.length;
+      out.push(...r.map((p) => p.map(fromPx)));
+      outR.push(...r.map(() => (same ? rots[ci] || 0 : 0)));
+    }
+    out.push(S.map(fromPx));
+    outR.push(0);
+    if (out.length > deps.maxCells) return `マスは最大${deps.maxCells}個までです`;
+    cells = out;
+    rots = outR;
+    return null;
   }
 
   // ---------- 操作 ----------
@@ -894,11 +891,8 @@ export function initCustomEditor(deps: EditorDeps) {
           if (r && !r.made && path.length > 2)
             deps.toast(cells.length >= deps.maxCells ? `マスは最大${deps.maxCells}個までです` : r.thin ? '細すぎるマスになるので区切りませんでした。もう少し内側をなぞってください' : '区切るマスがありませんでした');
         } else {
-          if (cells.length >= deps.maxCells) deps.toast(`マスは最大${deps.maxCells}個までです`);
-          else {
-            cells.push(shapeFor(path));
-            rots.push(0);
-          }
+          const err = carve(path);
+          if (err) deps.toast(err);
         }
       }
     }
@@ -984,59 +978,11 @@ export function initCustomEditor(deps: EditorDeps) {
     lockAspect = !lockAspect;
     syncUI();
   });
-  // 整列：いまのマスを、位置の順番はそのままに、同じ大きさで格子にそろえる
-  q('#edAlign').addEventListener(
-    'click',
-    act(() => {
-      const n = cells.length;
-      if (n < 2) return;
-      const f = frame();
-      const { c: slots, s: sz } = patternCenters('grid', n, f.iw, f.ih);
-      const px = cells.map((c) => c.map(toPx));
-      const info = px.map((p, i) => {
-        const b = bbox(p);
-        return { i, b, cx: (b.x0 + b.x1) / 2, cy: (b.y0 + b.y1) / 2 };
-      });
-      // 上から行ごとに分け、行の中は左から（格子の行の数に合わせる）
-      const ys = [...new Set(slots.map((p) => Math.round(p.y)))];
-      const counts = ys.map((y) => slots.filter((p) => Math.round(p.y) === y).length);
-      const byY = [...info].sort((a, b) => a.cy - b.cy);
-      const order: typeof info = [];
-      let k = 0;
-      for (const cnt of counts) {
-        order.push(...byY.slice(k, k + cnt).sort((a, b) => a.cx - b.cx));
-        k += cnt;
-      }
-      const next = cells.slice();
-      order.forEach((o, j) => {
-        const t = slots[j];
-        const m = Math.max(o.b.x1 - o.b.x0, o.b.y1 - o.b.y0) || 1;
-        const sc = sz / m;
-        next[o.i] = px[o.i].map((p) => fromPx({ x: t.x + (p.x - o.cx) * sc, y: t.y + (p.y - o.cy) * sc }));
-      });
-      cells = next;
-    }),
-  );
-  // 自動配置：写真の枚数ぶん、選んだ図形を規則的に並べる（いまのマスは置き換え）
-  root.querySelectorAll<HTMLButtonElement>('[data-pat]').forEach((b) =>
-    b.addEventListener(
-      'click',
-      act(() => {
-        const kind = (tool === 'select' || tool === 'knife' ? 'circle' : tool) as ShapeKind;
-        const f = frame();
-        // 多すぎると図形が小さくなるので、4〜6個にしぼる
-        const n = Math.max(1, Math.min(6, deps.photos().length));
-        const { c, s: sz } = patternCenters(b.dataset.pat as Pattern, n, f.iw, f.ih);
-        setCells(c.map((p) => makeShape(kind, p.x, p.y, sz, sz).map(fromPx)));
-        sel = -1;
-      }),
-    ),
-  );
   q<HTMLSelectElement>('#edTpl').addEventListener('change', () => {
     const v = q<HTMLSelectElement>('#edTpl').value;
     if (!v) return;
     const before = snapshot();
-    setCells(v === 'blank' ? [[{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }]] : v === 'empty' ? [] : deps.templateCells(v).slice(0, deps.maxCells));
+    setCells(v === 'blank' ? [[{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }]] : deps.templateCells(v).slice(0, deps.maxCells));
     sel = -1;
     q<HTMLSelectElement>('#edTpl').value = '';
     commit(before);
@@ -1103,13 +1049,13 @@ export function initCustomEditor(deps: EditorDeps) {
     q('#edRemove').hidden = !c;
     const sel2 = q<HTMLSelectElement>('#edTpl');
     sel2.innerHTML =
-      '<option value="">選んで置き換え…</option><option value="blank">1マス（全面）</option><option value="empty">空っぽ</option>' +
+      '<option value="">選んで置き換え…</option><option value="blank">1マス（全面）</option>' +
       deps
         .templates()
         .map((t) => `<option value="${t.id}"></option>`)
         .join('');
     // 名前は textContent で入れる（自作レイアウトの名前を HTML として扱わない）
-    deps.templates().forEach((t, i) => (sel2.options[i + 3].textContent = t.name));
+    deps.templates().forEach((t, i) => (sel2.options[i + 2].textContent = t.name));
     root.hidden = false;
     document.body.classList.add('editing');
     layoutCanvas();
