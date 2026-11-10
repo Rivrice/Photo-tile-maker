@@ -50,7 +50,7 @@ const rectPoly = (r: Rect): Pt[] => [
 ];
 
 /** 凸多角形を内側に d だけ縮める */
-export function insetPoly(poly: Pt[], d: number): Pt[] {
+export function insetPoly(poly: Pt[], d: number, miterLimit = Infinity): Pt[] {
   if (d <= 0) return poly;
   const n = poly.length;
   // 向き（時計回りかどうか）
@@ -76,7 +76,15 @@ export function insetPoly(poly: Pt[], d: number): Pt[] {
       continue;
     }
     const t = ((l2.p.x - l1.p.x) * l2.v.y - (l2.p.y - l1.p.y) * l2.v.x) / den;
-    out.push({ x: l1.p.x + l1.v.x * t, y: l1.p.y + l1.v.y * t });
+    const q = { x: l1.p.x + l1.v.x * t, y: l1.p.y + l1.v.y * t };
+    // 鋭い角（凹んだ形の切り口など）で、点が遠くへ飛ばないようにする
+    if (Math.hypot(q.x - poly[i].x, q.y - poly[i].y) > d * miterLimit) {
+      // 角の両側の辺を d だけずらした点の中間を使う
+      const m1 = { x: l1.p.x + l1.v.x, y: l1.p.y + l1.v.y };
+      out.push({ x: (m1.x + l2.p.x) / 2, y: (m1.y + l2.p.y) / 2 });
+      continue;
+    }
+    out.push(q);
   }
   return out;
 }
@@ -602,8 +610,22 @@ export function cellsToTiles(cells: Pt[][], inp: Pick<LayoutInput, 'W' | 'H' | '
   return cells.map((cell, i) => {
     const poly = cell.map((p) => ({ x: ox + p.x * iw, y: oy + p.y * ih }));
     // 外枠に接する辺は余白の位置ちょうどになるよう、すき間の半分だけ縮める
-    return polyToTile(i, insetPoly(poly, gap / 2));
+    return polyToTile(i, insetPoly(poly, gap / 2, isConvex(poly) ? Infinity : 3));
   });
+}
+
+/** 凸多角形かどうか */
+function isConvex(poly: Pt[]) {
+  let sign = 0;
+  const n = poly.length;
+  for (let i = 0; i < n; i++) {
+    const a = poly[i], b = poly[(i + 1) % n], c = poly[(i + 2) % n];
+    const z = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+    if (Math.abs(z) < 1e-9) continue;
+    if (sign && Math.sign(z) !== sign) return false;
+    sign = Math.sign(z);
+  }
+  return true;
 }
 
 export function customDef(c: CustomLayout): LayoutDef {
