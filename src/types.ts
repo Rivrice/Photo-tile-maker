@@ -30,6 +30,10 @@ export interface Composition {
   horizon?: number;
   /** 対角線の向き：1 = 左上→右下, -1 = 右上→左下 */
   diag?: 1 | -1;
+  /** 検出した対角方向の線（0..1、画像の端から端まで） */
+  line?: { a: Pt; b: Pt };
+  /** 左右対称の軸（0..1） */
+  axis?: number;
 }
 
 export interface PhotoItem {
@@ -53,6 +57,8 @@ export interface PhotoItem {
   /** トリミング中心の手動指定（null = 構図から自動） */
   pan: Pt | null;
   zoom: number;
+  /** 元ファイルからの回転（時計回り 90° × rot） */
+  rot: number;
 }
 
 /**
@@ -91,4 +97,7 @@ export interface Settings {
   format: 'image/jpeg' | 'image/png' | 'image/webp';
   quality: number;
   outEdge: number;
+  gradKey: 'bright' | 'hue' | 'sat' | 'tone';
+  gradDir: 'lr' | 'tb' | 'tlbr' | 'bltr' | 'radial';
+  gradRev: boolean;
 }
