@@ -12,6 +12,16 @@ export interface Crop {
   sh: number;
 }
 
+/**
+ * 写真を角度 angle で回転して置くとき、タイル (w×h) を覆うのに必要な写真側の枠の大きさ。
+ * 回転したタイルを囲む長方形を、写真から切り出せばよい。
+ */
+export function photoBox(p: PhotoItem, w: number, h: number) {
+  const a = ((p.angle || 0) * Math.PI) / 180;
+  const c = Math.abs(Math.cos(a)), s = Math.abs(Math.sin(a));
+  return { bw: w * c + h * s, bh: w * s + h * c };
+}
+
 export function effectiveComp(p: PhotoItem): CompType | 'none' {
   return p.compOverride ?? p.comp.type;
 }
@@ -293,7 +303,11 @@ export function drawScene(x: CanvasRenderingContext2D, o: SceneOptions) {
     if (!p) continue;
     const w = t.w * k, h = t.h * k;
     const clip = t.clip.map((q) => ({ x: q.x * k, y: q.y * k }));
-    const crop = cropFor(p, t.w, t.h, st.smartCrop);
+    // 回転している写真は、回転後のタイルを覆う枠で切り出す
+    const box = photoBox(p, t.w, t.h);
+    const crop = cropFor(p, box.bw, box.bh, st.smartCrop);
+    const bw = box.bw * k, bh = box.bh * k;
+    const ang = ((p.angle || 0) * Math.PI) / 180;
     x.save();
     tileLocal(x, t, k);
 
@@ -314,24 +328,25 @@ export function drawScene(x: CanvasRenderingContext2D, o: SceneOptions) {
     const type = effectiveComp(p);
     const cutout = st.overlay === 'cutout' && type !== 'none';
     const map = (u: number, v: number) => ({
-      x: ((u * p.width - crop.sx) / crop.sw - 0.5) * w,
-      y: ((v * p.height - crop.sy) / crop.sh - 0.5) * h,
+      x: ((u * p.width - crop.sx) / crop.sw - 0.5) * bw,
+      y: ((v * p.height - crop.sy) / crop.sh - 0.5) * bh,
     });
     // 写真の短辺（正規化長 1）→ タイル上の長さ
-    const len = (l: number) => ((l * Math.min(p.width, p.height)) / crop.sw) * w;
-    const shapes = type === 'none' || st.overlay === 'none' ? null : shapeSet({ w, h, map, len, p, type });
+    const len = (l: number) => ((l * Math.min(p.width, p.height)) / crop.sw) * bw;
+    const shapes = type === 'none' || st.overlay === 'none' ? null : shapeSet({ w: bw, h: bh, map, len, p, type });
 
-    const { img, crop: c2 } = o.image(t, p, crop, w, h);
+    const { img, crop: c2 } = o.image(t, p, crop, bw, bh);
     x.save();
     x.clip(tilePath);
+    if (ang) x.rotate(ang);
     x.imageSmoothingQuality = 'high';
     x.globalAlpha = o.dragging === t.idx ? 0.35 : 1;
-    x.drawImage(img, c2.sx, c2.sy, c2.sw, c2.sh, -w / 2, -h / 2, w, h);
+    x.drawImage(img, c2.sx, c2.sy, c2.sw, c2.sh, -bw / 2, -bh / 2, bw, bh);
     x.globalAlpha = 1;
     if (cutout && shapes) {
       // 切り抜きの外側は、写真を背景色で薄く覆う（紙に窓を開けたような見た目）
       const outside = new Path2D();
-      outside.rect(-w / 2 - 1, -h / 2 - 1, w + 2, h + 2);
+      outside.rect(-bw / 2 - 1, -bh / 2 - 1, bw + 2, bh + 2);
       outside.addPath(shapes.cut);
       x.fillStyle = st.bg;
       x.globalAlpha = 0.84;
@@ -351,6 +366,7 @@ export function drawScene(x: CanvasRenderingContext2D, o: SceneOptions) {
     if (shapes && (st.overlay === 'guide' || st.overlay === 'accent')) {
       x.save();
       x.clip(tilePath);
+      if (ang) x.rotate(ang);
       const accent = st.overlay === 'accent';
       x.strokeStyle = st.overlayColor;
       x.fillStyle = st.overlayColor;

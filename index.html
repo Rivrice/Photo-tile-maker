@@ -49,14 +49,7 @@
 
       <section class="stage">
         <div class="stage-tools">
-          <div class="mode-seg" id="modeSeg" role="radiogroup" aria-label="ドラッグ操作">
-            <button data-mode="swap" class="active">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4 3 8l4 4M3 8h13M17 20l4-4-4-4M21 16H8"/></svg>入れ替え
-            </button>
-            <button data-mode="pan">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v18M3 12h18M12 3 9.5 5.5M12 3l2.5 2.5M12 21l-2.5-2.5M12 21l2.5-2.5M3 12l2.5-2.5M3 12l2.5 2.5M21 12l-2.5-2.5M21 12l-2.5 2.5"/></svg>位置調整
-            </button>
-          </div>
+          <button class="zoom-pill" id="zoomReset" hidden>全体の拡大を戻す</button>
           <button class="icon-btn" id="fullBtn" aria-label="全体を全画面で表示" title="全画面で見る"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
         </div>
         <div class="stage-inner" id="stage">
@@ -132,7 +125,7 @@
             <button data-sort="shuffle"><i class="sw-shuffle"></i>シャッフル</button>
             <button data-sort="reverse"><i class="sw-reverse"></i>逆順</button>
           </div>
-          <p class="hint">プレビューの写真をドラッグして、別の写真の上で離すと入れ替わります。長押しで全画面表示、2本指で写真を拡大できます。</p>
+          <p class="hint">プレビューの写真をドラッグして、別の写真の上で離すと入れ替わります。長押しで全画面表示、2本指でプレビュー全体を拡大できます。</p>
         </details>
 
         <details open data-tab="sort">
@@ -158,7 +151,7 @@
 
         <details open data-tab="comp" id="selPanel">
           <summary>選択中の写真</summary>
-          <div class="sel-empty" id="selEmpty">プレビューの写真をタップすると、検出した構図の確認・変更や位置の調整ができます。</div>
+          <div class="sel-empty" id="selEmpty">プレビューの写真をタップすると、検出した構図の確認・変更ができます。</div>
           <div id="selBody" hidden>
             <div class="sel-head">
               <img id="selThumb" alt="" />
@@ -181,18 +174,51 @@
                 <option value="none">図形なし</option>
               </select>
             </div>
-            <div class="field">
-              <span>ズーム <output id="selZoomOut"></output></span>
-              <input id="selZoom" type="range" min="1" max="4" step="0.01" />
+            <div class="sel-actions">
+              <button class="btn-sm ghost danger" id="selDelete">この写真を削除</button>
             </div>
-            <div class="sel-rotate">
-              <button class="btn-sm" id="selRotL"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v6h6"/><path d="M4.5 10A8 8 0 1 1 6 16.5"/></svg>左に回転</button>
-              <button class="btn-sm" id="selRotR"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 4v6h-6"/><path d="M19.5 10A8 8 0 1 0 18 16.5"/></svg>右に回転</button>
-              <button class="btn-sm" id="selView"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>全画面</button>
+          </div>
+        </details>
+
+        <details open data-tab="adjust" id="adjPanel">
+          <summary>写真の調整</summary>
+          <div class="sel-empty" id="adjEmpty">プレビューの写真をタップして選ぶと、サイズ・回転・位置を調整できます。</div>
+          <div id="adjBody" hidden>
+            <div class="adj-head">
+              <img id="adjThumb" alt="" />
+              <div class="sel-name" id="adjName"></div>
+            </div>
+            <div class="trackpad" id="trackpad" aria-label="位置調整のトラックパッド">
+              <i class="tp-dot" id="tpDot"></i>
+              <span>ここをなぞって位置を調整</span>
+            </div>
+            <div class="field pos-slider">
+              <span>横の位置</span>
+              <input id="adjX" type="range" min="0" max="1" step="0.001" />
+            </div>
+            <div class="field pos-slider">
+              <span>縦の位置</span>
+              <input id="adjY" type="range" min="0" max="1" step="0.001" />
+            </div>
+            <div class="field">
+              <span>サイズ <output id="adjZoomOut"></output></span>
+              <div class="range-row">
+                <button class="step" data-for="adjZoom" data-step="-0.05" aria-label="小さく">−</button>
+                <input id="adjZoom" type="range" min="1" max="4" step="0.01" />
+                <button class="step" data-for="adjZoom" data-step="0.05" aria-label="大きく">＋</button>
+              </div>
+            </div>
+            <div class="field">
+              <span>回転 <output id="adjAngleOut"></output></span>
+              <div class="range-row">
+                <button class="step" data-for="adjAngle" data-step="-1" aria-label="左に1度">−</button>
+                <input id="adjAngle" type="range" min="-180" max="180" step="1" />
+                <button class="step" data-for="adjAngle" data-step="1" aria-label="右に1度">＋</button>
+              </div>
             </div>
             <div class="sel-actions">
-              <button class="btn-sm" id="selReset">位置を自動に戻す</button>
-              <button class="btn-sm ghost danger" id="selDelete">この写真を削除</button>
+              <button class="btn-sm" id="adjReset">元に戻す</button>
+              <button class="btn-sm" id="adjView">全画面で見る</button>
             </div>
           </div>
         </details>
@@ -259,6 +285,7 @@
       <button data-tab="layout" class="active"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v18M12 12h9"/></svg>レイアウト</button>
       <button data-tab="sort"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4v16M3 16l4 4 4-4M17 20V4M13 8l4-4 4 4"/></svg>並べ替え</button>
       <button data-tab="comp"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M15 3v18M3 9h18M3 15h18" opacity=".55"/><circle cx="15" cy="9" r="2.4"/></svg>構図</button>
+      <button data-tab="adjust"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M12 8v8M8 12h8M12 8l-1.5 1.5M12 8l1.5 1.5"/></svg>調整</button>
       <button data-tab="style"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 0 18c1.2 0 1.8-.9 1.4-2-.5-1.2.3-2.5 1.6-2.5H17a4 4 0 0 0 4-4C21 7 17 3 12 3z"/><circle cx="7.5" cy="11" r="1.2"/><circle cx="10.5" cy="7.3" r="1.2"/><circle cx="15" cy="7.8" r="1.2"/></svg>スタイル</button>
       <button data-tab="save"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5M4 19h16"/></svg>保存</button>
     </nav>

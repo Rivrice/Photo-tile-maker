@@ -4,8 +4,8 @@ import '@fontsource/inter/700.css';
 import './style.css';
 import { COMP_LABELS, rgbToHsl } from './analyze';
 import { LAYOUTS, getLayout, pointInTile } from './layouts';
-import { ACCEPT, MAX_PHOTOS, extractRegion, loadPhoto, makeSamples, rotatePhoto } from './photos';
-import { IS_IOS, canvasToBlob, cropFor, drawScene, effectiveComp, type Crop } from './render';
+import { ACCEPT, MAX_PHOTOS, extractRegion, loadPhoto, makeSamples } from './photos';
+import { IS_IOS, canvasToBlob, cropFor, drawScene, effectiveComp, photoBox, type Crop } from './render';
 import { IS_NATIVE, nativeSave, nativeShare, onBackButton } from './native';
 import type { CompType, OverlayMode, PhotoItem, Settings, Tile } from './types';
 
@@ -58,8 +58,8 @@ let samples: PhotoItem[] | null = null;
 let selectedId = '';
 let tiles: Tile[] = [];
 let dims = { W: 1000, H: 1000 };
-type Mode = 'swap' | 'pan';
-let mode: Mode = 'swap';
+/** プレビュー全体の拡大（倍率と、中央からのずれ px） */
+const stageView = { z: 1, x: 0, y: 0 };
 
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector(sel) as T;
 const $$ = <T extends HTMLElement = HTMLElement>(sel: string) => [...document.querySelectorAll(sel)] as T[];
@@ -132,14 +132,17 @@ function draw() {
   const pad = 2;
   const availW = Math.max(50, box.width - pad * 2 - parseFloat(getComputedStyle(stage).paddingLeft) * 2);
   const availH = Math.max(50, box.height - pad * 2 - parseFloat(getComputedStyle(stage).paddingTop) * 2);
-  const cssScale = Math.min(availW / dims.W, availH / dims.H);
+  const cssScale = Math.min(availW / dims.W, availH / dims.H) * stageView.z;
   const cssW = dims.W * cssScale, cssH = dims.H * cssScale;
   const dpr = Math.min(2.5, window.devicePixelRatio || 1);
-  const k = cssScale * dpr;
+  // 拡大中もくっきり描く（ただし大きくなりすぎないよう長辺 4096px まで）
+  const k = Math.min(cssScale * dpr, 4096 / Math.max(dims.W, dims.H));
   preview.width = Math.round(dims.W * k);
   preview.height = Math.round(dims.H * k);
   preview.style.width = `${cssW}px`;
   preview.style.height = `${cssH}px`;
+  clampViewOffset();
+  applyStageTransform();
   const ctx = preview.getContext('2d')!;
   const sel = items.findIndex((p) => p.id === selectedId);
   drawScene(ctx, {
@@ -155,11 +158,17 @@ function draw() {
     dropTarget: dragState?.target ?? undefined,
     dragging: dragState ? dragState.src : undefined,
   });
+  if (selectedId) renderAdjPanel();
   const def = getLayout(settings.layout);
   const out = outSize();
   $('#meta').textContent = usingSamples()
     ? `サンプル表示中 ・ 写真を追加するとここに並びます（最大${MAX_PHOTOS}枚）`
     : `${items.length}枚 ・ ${def.name} ・ 書き出し ${out.w}×${out.h}px`;
+}
+
+function applyStageTransform(extra = 1) {
+  preview.style.transform = `translate(${stageView.x}px, ${stageView.y}px)${extra !== 1 ? ` scale(${extra})` : ''}`;
+  $('#zoomReset').hidden = stageView.z <= 1.001;
 }
 
 function outSize() {
@@ -263,6 +272,7 @@ function select(id: string) {
   selectedId = id;
   $$('#list li').forEach((li) => li.classList.toggle('active', li.dataset.id === id));
   renderSelPanel();
+  renderAdjPanel();
   render();
 }
 
@@ -389,9 +399,9 @@ function removePhoto(id: string) {
   listEl.addEventListener('contextmenu', (e) => e.preventDefault());
 })();
 
-// ---------- プレビュー上の操作（入れ替え・位置調整） ----------
+// ---------- プレビュー上の操作（入れ替え・全体の拡大） ----------
 
-function toLayout(e: PointerEvent | WheelEvent) {
+function toLayout(e: { clientX: number; clientY: number }) {
   const r = preview.getBoundingClientRect();
   return { x: ((e.clientX - r.left) / r.width) * dims.W, y: ((e.clientY - r.top) / r.height) * dims.H };
 }
@@ -402,10 +412,16 @@ function tileAt(x: number, y: number): Tile | null {
 
 const MAX_ZOOM = 4;
 
-/** 写真の中心位置 (cx, cy) と倍率 z が、タイル (w×h) に収まる範囲になるよう調整する */
+/** 倍率1のときに写真の見える幅・高さ（0..1） */
+function baseView(p: PhotoItem, t: Tile) {
+  const { bw, bh } = photoBox(p, t.w, t.h);
+  const s1 = Math.max(bw / p.width, bh / p.height);
+  return { sw1: Math.min(1, bw / s1 / p.width), sh1: Math.min(1, bh / s1 / p.height) };
+}
+
+/** 写真の中心位置 (cx, cy) と倍率 z が、タイルに収まる範囲になるよう調整する */
 function clampView(p: PhotoItem, t: Tile, cx: number, cy: number, z: number) {
-  const s1 = Math.max(t.w / p.width, t.h / p.height);
-  const sw1 = Math.min(1, t.w / s1 / p.width), sh1 = Math.min(1, t.h / s1 / p.height); // 倍率1のときの見える幅（0..1）
+  const { sw1, sh1 } = baseView(p, t);
   z = Math.min(MAX_ZOOM, Math.max(1, z));
   const hw = sw1 / z / 2, hh = sh1 / z / 2;
   return { x: Math.min(1 - hw, Math.max(hw, cx)), y: Math.min(1 - hh, Math.max(hh, cy)), z };
@@ -413,8 +429,7 @@ function clampView(p: PhotoItem, t: Tile, cx: number, cy: number, z: number) {
 
 /** 位置調整：目標の中心へ動かす。端で動かせない方向は、動かせるところまで自動で拡大する */
 function panTo(p: PhotoItem, t: Tile, cx: number, cy: number, minZoom: number) {
-  const s1 = Math.max(t.w / p.width, t.h / p.height);
-  const sw1 = Math.min(1, t.w / s1 / p.width), sh1 = Math.min(1, t.h / s1 / p.height);
+  const { sw1, sh1 } = baseView(p, t);
   const room = (c: number) => Math.max(0.02, 2 * Math.min(c, 1 - c));
   const need = Math.max(minZoom, sw1 / room(cx), sh1 / room(cy));
   const v = clampView(p, t, cx, cy, need);
@@ -422,21 +437,44 @@ function panTo(p: PhotoItem, t: Tile, cx: number, cy: number, minZoom: number) {
   p.zoom = v.z;
 }
 
+/** いま見えている範囲の中心（0..1）と、その時の切り出し範囲 */
+function currentView(p: PhotoItem, t: Tile) {
+  const { bw, bh } = photoBox(p, t.w, t.h);
+  const crop = cropFor(p, bw, bh, settings.smartCrop);
+  return { crop, c: { x: (crop.sx + crop.sw / 2) / p.width, y: (crop.sy + crop.sh / 2) / p.height } };
+}
+
+// プレビュー全体の拡大（2本指・ホイール）
+const VIEW_MAX = 5;
+function clampViewOffset() {
+  const box = stage.getBoundingClientRect();
+  const r = { w: parseFloat(preview.style.width) || 0, h: parseFloat(preview.style.height) || 0 };
+  const mx = Math.max(0, (r.w - box.width) / 2 + 16), my = Math.max(0, (r.h - box.height) / 2 + 16);
+  stageView.x = Math.min(mx, Math.max(-mx, stageView.x));
+  stageView.y = Math.min(my, Math.max(-my, stageView.y));
+}
+/** 画面上の点 (px, py) を固定したまま、全体の倍率を z にする */
+function zoomStageAt(px: number, py: number, z: number) {
+  z = Math.min(VIEW_MAX, Math.max(1, z));
+  const box = stage.getBoundingClientRect();
+  const cx = box.left + box.width / 2, cy = box.top + box.height / 2;
+  stageView.x = px - cx - ((px - cx - stageView.x) * z) / stageView.z;
+  stageView.y = py - cy - ((py - cy - stageView.y) * z) / stageView.z;
+  stageView.z = z;
+  if (z === 1) stageView.x = stageView.y = 0;
+}
+function resetStageZoom() {
+  stageView.z = 1;
+  stageView.x = stageView.y = 0;
+  render();
+}
+$('#zoomReset').addEventListener('click', resetStageZoom);
+
 (() => {
   type Pointer = { x: number; y: number };
   const pts = new Map<number, Pointer>();
-  let st: {
-    tile: Tile;
-    pid: number;
-    x: number;
-    y: number;
-    active: boolean;
-    timer: number;
-    startPan?: { x: number; y: number };
-    startZoom?: number;
-    crop?: Crop;
-  } | null = null;
-  let pinch: { tile: Tile; d0: number; z0: number; mid0: Pointer; c0: { x: number; y: number }; crop: Crop } | null = null;
+  let st: { tile: Tile; pid: number; x: number; y: number; active: boolean; timer: number } | null = null;
+  let pinch: { d0: number; z0: number; mid0: Pointer; x0: number; y0: number; scale0: number } | null = null;
   const ghost = $('#ghost');
 
   const cancelDrag = () => {
@@ -450,10 +488,6 @@ function panTo(p: PhotoItem, t: Tile, cx: number, cy: number, minZoom: number) {
       render();
     }
   };
-  const viewOf = (p: PhotoItem, t: Tile) => {
-    const crop = cropFor(p, t.w, t.h, settings.smartCrop);
-    return { crop, c: { x: (crop.sx + crop.sw / 2) / p.width, y: (crop.sy + crop.sh / 2) / p.height } };
-  };
 
   preview.addEventListener('pointerdown', (e) => {
     pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -462,19 +496,18 @@ function panTo(p: PhotoItem, t: Tile, cx: number, cy: number, minZoom: number) {
     } catch {
       /* 合成イベントなど */
     }
-    // 2本目の指：ピンチで拡大・縮小（写真をタイルの中でズーム）
+    // 2本目の指：プレビュー全体を拡大・移動
     if (pts.size === 2) {
-      const tile = st?.tile ?? null;
       cancelDrag();
       const [a, b] = [...pts.values()];
-      const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-      const r = preview.getBoundingClientRect();
-      const t = tile ?? tileAt(((mid.x - r.left) / r.width) * dims.W, ((mid.y - r.top) / r.height) * dims.H);
-      if (!t) return;
-      const p = list()[t.idx];
-      const v = viewOf(p, t);
-      pinch = { tile: t, d0: Math.hypot(a.x - b.x, a.y - b.y) || 1, z0: p.zoom, mid0: mid, c0: v.c, crop: v.crop };
-      if (p.id !== selectedId) select(p.id);
+      pinch = {
+        d0: Math.hypot(a.x - b.x, a.y - b.y) || 1,
+        z0: stageView.z,
+        mid0: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 },
+        x0: stageView.x,
+        y0: stageView.y,
+        scale0: stageView.z,
+      };
       return;
     }
     if (pts.size > 2 || pinch) return;
@@ -492,14 +525,6 @@ function panTo(p: PhotoItem, t: Tile, cx: number, cy: number, minZoom: number) {
       cancelDrag();
       if (p) openPhotoViewer(p);
     }, 550);
-    if (mode === 'pan') {
-      const p = list()[t.idx];
-      const v = viewOf(p, t);
-      st.crop = v.crop;
-      st.startPan = v.c;
-      st.startZoom = p.zoom;
-      if (p.id !== selectedId) select(p.id);
-    }
   });
   preview.addEventListener('pointermove', (e) => {
     if (pts.has(e.pointerId)) pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -507,16 +532,15 @@ function panTo(p: PhotoItem, t: Tile, cx: number, cy: number, minZoom: number) {
       const [a, b] = [...pts.values()];
       const d = Math.hypot(a.x - b.x, a.y - b.y);
       const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-      const p = list()[pinch.tile.idx];
-      const r = preview.getBoundingClientRect();
-      // 2本指の中点の移動で位置も動かす
-      const du = ((mid.x - pinch.mid0.x) / r.width) * dims.W, dv = ((mid.y - pinch.mid0.y) / r.height) * dims.H;
-      const z = pinch.z0 * (d / pinch.d0);
-      const v = clampView(p, pinch.tile, pinch.c0.x - (du / pinch.tile.w) * (pinch.crop.sw / p.width), pinch.c0.y - (dv / pinch.tile.h) * (pinch.crop.sh / p.height), z);
-      p.zoom = v.z;
-      p.pan = { x: v.x, y: v.y };
-      renderSelPanel();
-      render();
+      // 指の中点を基準に拡大し、中点の移動で全体を動かす
+      stageView.z = pinch.z0;
+      stageView.x = pinch.x0;
+      stageView.y = pinch.y0;
+      zoomStageAt(pinch.mid0.x, pinch.mid0.y, pinch.z0 * (d / pinch.d0));
+      stageView.x += mid.x - pinch.mid0.x;
+      stageView.y += mid.y - pinch.mid0.y;
+      // 操作中は描き直さず、CSS の拡大だけで追従する（指を離したら高画質で描き直す）
+      applyStageTransform(stageView.z / pinch.scale0);
       return;
     }
     if (!st || e.pointerId !== st.pid) return;
@@ -524,18 +548,6 @@ function panTo(p: PhotoItem, t: Tile, cx: number, cy: number, minZoom: number) {
     if (!st.active && dist < 8) return;
     clearTimeout(st.timer);
     const items = list();
-    if (mode === 'pan') {
-      st.active = true;
-      const p = items[st.tile.idx];
-      const r = preview.getBoundingClientRect();
-      const du = ((e.clientX - st.x) / r.width) * dims.W; // レイアウト単位
-      const dv = ((e.clientY - st.y) / r.height) * dims.H;
-      const c = st.crop!;
-      panTo(p, st.tile, st.startPan!.x - (du / st.tile.w) * (c.sw / p.width), st.startPan!.y - (dv / st.tile.h) * (c.sh / p.height), st.startZoom!);
-      renderSelPanel();
-      render();
-      return;
-    }
     if (!st.active) {
       st.active = true;
       document.body.classList.add('dragging');
@@ -556,7 +568,10 @@ function panTo(p: PhotoItem, t: Tile, cx: number, cy: number, minZoom: number) {
   const end = (e: PointerEvent) => {
     pts.delete(e.pointerId);
     if (pinch) {
-      if (pts.size === 0) pinch = null;
+      if (pts.size === 0) {
+        pinch = null;
+        render();
+      }
       return;
     }
     if (!st || e.pointerId !== st.pid) return;
@@ -569,16 +584,17 @@ function panTo(p: PhotoItem, t: Tile, cx: number, cy: number, minZoom: number) {
     if (!s.active) {
       if (e.type === 'pointerup') {
         const p = items[s.tile.idx];
-        if (p) select(selectedId === p.id && mode === 'swap' ? '' : p.id);
+        if (p) select(selectedId === p.id ? '' : p.id);
       }
       return;
     }
-    if (mode === 'swap' && dragState) {
+    if (dragState) {
       const { src, target } = dragState;
       dragState = null;
       if (target != null) {
         [items[src], items[target]] = [items[target], items[src]];
         gradActive = null;
+        syncGradUI();
         if (!usingSamples()) renderList();
         else renderLayoutThumbs();
       }
@@ -588,22 +604,17 @@ function panTo(p: PhotoItem, t: Tile, cx: number, cy: number, minZoom: number) {
   preview.addEventListener('pointerup', end);
   preview.addEventListener('pointercancel', end);
   preview.addEventListener('contextmenu', (e) => e.preventDefault());
-  // ホイールでズーム（位置調整モード）
-  preview.addEventListener(
+  // ホイール（トラックパッドのピンチを含む）で全体を拡大
+  stage.addEventListener(
     'wheel',
     (e) => {
-      if (mode !== 'pan') return;
-      const pt = toLayout(e);
-      const t = tileAt(pt.x, pt.y);
-      if (!t) return;
       e.preventDefault();
-      const p = list()[t.idx];
-      const v0 = viewOf(p, t);
-      const v = clampView(p, t, v0.c.x, v0.c.y, p.zoom * Math.exp(-e.deltaY * 0.0015));
-      p.zoom = v.z;
-      p.pan = { x: v.x, y: v.y };
-      if (p.id !== selectedId) select(p.id);
-      else renderSelPanel();
+      // Ctrl＋ホイール（トラックパッドのピンチ）か、等倍のときは拡大。拡大中のスクロールは移動
+      if (e.ctrlKey || stageView.z <= 1) zoomStageAt(e.clientX, e.clientY, stageView.z * Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0015)));
+      else {
+        stageView.x -= e.deltaX;
+        stageView.y -= e.deltaY;
+      }
       render();
     },
     { passive: false },
@@ -741,14 +752,132 @@ window.addEventListener('resize', () => !viewer.hidden && layoutViewer());
   );
 })();
 
-$$('#modeSeg button').forEach((b) =>
+
+// ---------- 写真の調整（サイズ・回転・位置） ----------
+
+/** 選択中の写真と、それが入っているタイル */
+function selectedTile(): { p: PhotoItem; t: Tile } | null {
+  const items = list();
+  const i = items.findIndex((p) => p.id === selectedId);
+  const t = tiles.find((x) => x.idx === i);
+  return i >= 0 && t ? { p: items[i], t } : null;
+}
+
+function renderAdjPanel() {
+  const p = selected();
+  $('#adjEmpty').hidden = !!p;
+  $('#adjBody').hidden = !p;
+  if (!p) return;
+  $<HTMLImageElement>('#adjThumb').src = p.thumbUrl;
+  $('#adjName').textContent = p.name;
+  $<HTMLInputElement>('#adjZoom').value = String(p.zoom);
+  $('#adjZoomOut').textContent = `${Math.round(p.zoom * 100)}%`;
+  $<HTMLInputElement>('#adjAngle').value = String(p.angle);
+  $('#adjAngleOut').textContent = `${p.angle > 0 ? '+' : ''}${p.angle}°`;
+  const st = selectedTile();
+  const c = st ? currentView(st.p, st.t).c : { x: 0.5, y: 0.5 };
+  $<HTMLInputElement>('#adjX').value = String(c.x);
+  $<HTMLInputElement>('#adjY').value = String(c.y);
+  // トラックパッドの点：写真のどこを見ているか
+  const dot = $('#tpDot');
+  dot.style.left = `${c.x * 100}%`;
+  dot.style.top = `${c.y * 100}%`;
+}
+
+$('#adjZoom').addEventListener('input', () => {
+  const st = selectedTile();
+  if (!st) return;
+  const { p, t } = st;
+  const c = currentView(p, t).c;
+  const v = clampView(p, t, c.x, c.y, Number($<HTMLInputElement>('#adjZoom').value));
+  p.zoom = v.z;
+  p.pan = { x: v.x, y: v.y };
+  renderAdjPanel();
+  render();
+});
+$('#adjAngle').addEventListener('input', () => {
+  const st = selectedTile();
+  if (!st) return;
+  const { p, t } = st;
+  let a = Number($<HTMLInputElement>('#adjAngle').value);
+  // 0°・±90°・±180° の近くでは吸着
+  for (const s of [-180, -90, 0, 90, 180]) if (Math.abs(a - s) <= 2) a = s;
+  const c = currentView(p, t).c;
+  p.angle = a;
+  const v = clampView(p, t, c.x, c.y, p.zoom);
+  p.pan = { x: v.x, y: v.y };
+  renderAdjPanel();
+  render();
+});
+for (const axis of ['X', 'Y'] as const) {
+  $(`#adj${axis}`).addEventListener('input', () => {
+    const st = selectedTile();
+    if (!st) return;
+    const { p, t } = st;
+    const c = currentView(p, t).c;
+    const v = Number($<HTMLInputElement>(`#adj${axis}`).value);
+    panTo(p, t, axis === 'X' ? v : c.x, axis === 'Y' ? v : c.y, p.zoom);
+    renderAdjPanel();
+    render();
+  });
+}
+$('#adjReset').addEventListener('click', () => {
+  const p = selected();
+  if (!p) return;
+  p.pan = null;
+  p.zoom = 1;
+  p.angle = 0;
+  renderAdjPanel();
+  render();
+});
+$('#adjView').addEventListener('click', () => {
+  const p = selected();
+  if (p) openPhotoViewer(p);
+});
+$$('[data-step]').forEach((b) =>
   b.addEventListener('click', () => {
-    mode = b.dataset.mode as Mode;
-    $$('#modeSeg button').forEach((x) => x.classList.toggle('active', x === b));
-    document.body.classList.toggle('mode-pan', mode === 'pan');
-    toast(mode === 'pan' ? '写真をドラッグしてトリミング位置を調整できます' : '写真をドラッグして別の写真の上で離すと入れ替わります', 2400);
+    const el = $<HTMLInputElement>(`#${b.dataset.for}`);
+    el.value = String(Number(el.value) + Number(b.dataset.step));
+    el.dispatchEvent(new Event('input'));
   }),
 );
+
+// トラックパッド（スマホ）：なぞった方向へ写真が動く
+(() => {
+  const pad = $('#trackpad');
+  let st: { pid: number; x: number; y: number; c: { x: number; y: number }; crop: Crop; zoom: number } | null = null;
+  pad.addEventListener('pointerdown', (e) => {
+    const s = selectedTile();
+    if (!s) return;
+    try {
+      pad.setPointerCapture(e.pointerId);
+    } catch {
+      /* 合成イベントなど */
+    }
+    const v = currentView(s.p, s.t);
+    st = { pid: e.pointerId, x: e.clientX, y: e.clientY, c: v.c, crop: v.crop, zoom: s.p.zoom };
+    pad.classList.add('active');
+  });
+  pad.addEventListener('pointermove', (e) => {
+    if (!st || e.pointerId !== st.pid) return;
+    const s = selectedTile();
+    if (!s) return;
+    const r = pad.getBoundingClientRect();
+    // パッドの幅をなぞると、写真の見えている幅だけ動く
+    const du = ((e.clientX - st.x) / r.width) * (st.crop.sw / s.p.width);
+    const dv = ((e.clientY - st.y) / r.height) * (st.crop.sh / s.p.height);
+    panTo(s.p, s.t, st.c.x - du, st.c.y - dv, st.zoom);
+    renderAdjPanel();
+    render();
+  });
+  const end = (e: PointerEvent) => {
+    if (!st || e.pointerId !== st.pid) return;
+    st = null;
+    pad.classList.remove('active');
+  };
+  pad.addEventListener('pointerup', end);
+  pad.addEventListener('pointercancel', end);
+})();
 
 // ---------- 写真の追加 ----------
 
@@ -1014,8 +1143,6 @@ function renderSelPanel() {
   $('#selComp').innerHTML = `${auto}<small>検出の確かさ ${pct}%</small>`;
   $('#selColors').innerHTML = p.stats.palette.map((c) => `<i style="background:${c}"></i>`).join('');
   $<HTMLSelectElement>('#selType').value = p.compOverride ?? 'auto';
-  $<HTMLInputElement>('#selZoom').value = String(p.zoom);
-  $('#selZoomOut').textContent = `${p.zoom.toFixed(2)}×`;
 }
 $('#selType').addEventListener('change', () => {
   const p = selected();
@@ -1024,36 +1151,6 @@ $('#selType').addEventListener('change', () => {
   p.compOverride = v === 'auto' ? null : (v as CompType | 'none');
   if (!usingSamples()) renderList();
   render();
-});
-$('#selZoom').addEventListener('input', () => {
-  const p = selected();
-  if (!p) return;
-  p.zoom = Number($<HTMLInputElement>('#selZoom').value);
-  $('#selZoomOut').textContent = `${p.zoom.toFixed(2)}×`;
-  render();
-});
-$('#selReset').addEventListener('click', () => {
-  const p = selected();
-  if (!p) return;
-  p.pan = null;
-  p.zoom = 1;
-  renderSelPanel();
-  render();
-});
-function rotateSelected(dir: 1 | -1) {
-  const p = selected();
-  if (!p) return;
-  rotatePhoto(p, dir);
-  if (!usingSamples()) renderList();
-  else renderLayoutThumbs();
-  renderSelPanel();
-  render();
-}
-$('#selRotL').addEventListener('click', () => rotateSelected(-1));
-$('#selRotR').addEventListener('click', () => rotateSelected(1));
-$('#selView').addEventListener('click', () => {
-  const p = selected();
-  if (p) openPhotoViewer(p);
 });
 $('#selDelete').addEventListener('click', () => {
   const p = selected();
@@ -1213,6 +1310,7 @@ $('#outEdge').addEventListener('change', () => {
 $$('#tabbar button').forEach((b) =>
   b.addEventListener('click', () => {
     document.body.dataset.tab = b.dataset.tab!;
+    if (b.dataset.tab === 'adjust' && !selected() && list().length) select(list()[0].id);
     $$('#tabbar button').forEach((x) => x.classList.toggle('active', x === b));
     $('.panel.right').scrollTop = 0;
   }),
@@ -1257,12 +1355,13 @@ async function exportImage(): Promise<Blob> {
   for (const [i, t] of ts.entries()) {
     progress.textContent = `写真を配置中… ${i + 1}/${ts.length}`;
     const p = items[t.idx];
-    const crop = cropFor(p, t.w, t.h, settings.smartCrop);
-    const dw = Math.min(Math.ceil(t.w * k), Math.ceil(crop.sw));
-    const dh = Math.min(Math.ceil(t.h * k), Math.ceil(crop.sh));
+    const { bw, bh } = photoBox(p, t.w, t.h);
+    const crop = cropFor(p, bw, bh, settings.smartCrop);
+    const dw = Math.min(Math.ceil(bw * k), Math.ceil(crop.sw));
+    const dh = Math.min(Math.ceil(bh * k), Math.ceil(crop.sh));
     // 元より大きくは引き伸ばさない（描画時に拡大される）
-    const scale = Math.min(1, Math.max(dw / (t.w * k), dh / (t.h * k)));
-    cache.set(t, await extractRegion(p, crop.sx, crop.sy, crop.sw, crop.sh, Math.max(1, t.w * k * scale), Math.max(1, t.h * k * scale)));
+    const scale = Math.min(1, Math.max(dw / (bw * k), dh / (bh * k)));
+    cache.set(t, await extractRegion(p, crop.sx, crop.sy, crop.sw, crop.sh, Math.max(1, bw * k * scale), Math.max(1, bh * k * scale)));
   }
   progress.textContent = '画像を書き出し中…';
   drawScene(out.getContext('2d')!, {
@@ -1386,6 +1485,7 @@ syncGradUI();
 renderOvSwatches();
 renderList();
 renderSelPanel();
+renderAdjPanel();
 render();
 
 if (!IS_NATIVE && import.meta.env.PROD && 'serviceWorker' in navigator) {
