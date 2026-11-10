@@ -1,0 +1,8 @@
+{
+  "appId": "io.github.rivrice.phototile",
+  "appName": "Photo Tile Maker",
+  "webDir": "dist",
+  "android": {
+    "allowMixedContent": false
+  }
+}

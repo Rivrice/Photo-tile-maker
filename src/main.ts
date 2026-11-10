@@ -6,6 +6,7 @@ import { COMP_LABELS, rgbToHsl } from './analyze';
 import { LAYOUTS, getLayout, pointInTile } from './layouts';
 import { ACCEPT, MAX_PHOTOS, extractRegion, loadPhoto, makeSamples } from './photos';
 import { IS_IOS, canvasToBlob, cropFor, drawScene, effectiveComp, type Crop } from './render';
+import { IS_NATIVE, nativeSave, nativeShare, onBackButton } from './native';
 import type { CompType, OverlayMode, PhotoItem, Settings, Tile } from './types';
 
 // ---------- 設定 ----------
@@ -551,7 +552,7 @@ async function addFiles(files: FileList | File[]) {
 }
 
 const fileInput = $<HTMLInputElement>('#file');
-fileInput.accept = ACCEPT;
+fileInput.accept = IS_NATIVE ? '' : ACCEPT; // Androidアプリでは拡張子指定が効かないため全ファイルを許可
 fileInput.addEventListener('change', () => {
   if (fileInput.files) addFiles(fileInput.files);
   fileInput.value = '';
@@ -971,7 +972,7 @@ $('#save').addEventListener('click', async () => {
     const o = outSize();
     $('#progress').textContent = `${o.w}×${o.h}px ・ ${(lastBlob.size / 1024 / 1024).toFixed(1)}MB`;
     const isTouch = matchMedia('(pointer: coarse)').matches;
-    if ((IS_IOS || isTouch) && canShareFiles()) {
+    if (IS_NATIVE || ((IS_IOS || isTouch) && canShareFiles())) {
       $('#shareDesc').textContent = `${o.w}×${o.h}px の画像を作成しました。`;
       $('#shareSheet').hidden = false;
     } else {
@@ -989,15 +990,38 @@ $('#save').addEventListener('click', async () => {
 $('#shareBtn').addEventListener('click', async () => {
   if (!lastBlob) return;
   try {
-    await navigator.share({ files: [new File([lastBlob], lastName, { type: lastBlob.type })] });
+    const file = new File([lastBlob], lastName, { type: lastBlob.type });
+    if (IS_NATIVE) await nativeShare([file]);
+    else await navigator.share({ files: [file] });
     $('#shareSheet').hidden = true;
   } catch {
     /* キャンセル */
   }
 });
-$('#shareDl').addEventListener('click', () => {
-  if (lastBlob) download(lastBlob, lastName);
+$('#shareDl').addEventListener('click', async () => {
   $('#shareSheet').hidden = true;
+  if (!lastBlob) return;
+  if (!IS_NATIVE) return download(lastBlob, lastName);
+  try {
+    const dir = await nativeSave([new File([lastBlob], lastName, { type: lastBlob.type })]);
+    toast(`${dir} に保存しました`);
+  } catch {
+    toast('保存できませんでした。「保存・共有」からお試しください', 5000);
+  }
+});
+if (IS_NATIVE) {
+  document.body.classList.add('native');
+  $('#shareBtn').textContent = '保存・共有（ギャラリー / Googleフォトなど）';
+  $('#shareDl').textContent = '端末の Documents フォルダに保存';
+}
+// Androidの「戻る」ボタン：開いているシートを閉じる。何も無ければアプリを終了
+onBackButton(() => {
+  const open = $$('.sheet-backdrop').find((s) => !s.hidden);
+  if (open) {
+    open.hidden = true;
+    return true;
+  }
+  return false;
 });
 $('#shareClose').addEventListener('click', () => ($('#shareSheet').hidden = true));
 $('#aboutBtn').addEventListener('click', () => ($('#aboutSheet').hidden = false));
@@ -1013,6 +1037,6 @@ renderList();
 renderSelPanel();
 render();
 
-if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+if (!IS_NATIVE && import.meta.env.PROD && 'serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}));
 }

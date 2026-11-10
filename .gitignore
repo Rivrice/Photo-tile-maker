@@ -1,3 +1,8 @@
 node_modules
 dist
 .DS_Store
+
+# 署名鍵はリポジトリに含めない
+*.keystore
+*.jks
+*.keystore.b64

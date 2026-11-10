@@ -1,0 +1,93 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+      # ubuntu-latest には Android SDK がプリインストール済み（ANDROID_HOME）
+      - run: echo "sdk.dir=$ANDROID_HOME" > android/local.properties
+      - uses: gradle/actions/setup-gradle@v4
+      - run: npm ci
+      - run: npm run build
+      - run: npx cap sync android
+      - name: Prepare signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          # Secrets に鍵があればそれを使う（上書き更新が可能）。無ければこの実行用に一時的な鍵を作る。
+          if [ -n "$KEYSTORE_B64" ]; then
+            if [ -z "$KEYSTORE_PASSWORD" ]; then
+              echo "::error::ANDROID_KEYSTORE_BASE64 はありますが ANDROID_KEYSTORE_PASSWORD が未登録（または名前違い）です"; exit 1
+            fi
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            echo "ANDROID_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "UPDATE_NOTE=以前のバージョンが入っている場合は、そのまま上書き更新できます。" >> "$GITHUB_ENV"
+          else
+            echo "UPDATE_NOTE=⚠ このAPKは一時的な鍵で署名されています。以前のバージョンが入っている場合は、先にアンインストールしてからインストールしてください（「パッケージが既存のパッケージと競合する」と表示される場合）。" >> "$GITHUB_ENV"
+            echo "::warning::ANDROID_KEYSTORE_BASE64 が未設定のため一時的な鍵で署名します（更新時はアンインストールが必要）"
+            TMP_PASS=$(openssl rand -hex 16)
+            keytool -genkeypair -keystore "$RUNNER_TEMP/release.keystore" -alias phototile -keyalg RSA -keysize 2048 \
+              -validity 10000 -storepass "$TMP_PASS" -keypass "$TMP_PASS" -dname "CN=Photo Tile Maker"
+            echo "::add-mask::$TMP_PASS"
+            echo "ANDROID_KEYSTORE_PASSWORD=$TMP_PASS" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_PASSWORD=$TMP_PASS" >> "$GITHUB_ENV"
+          fi
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+          echo "ANDROID_KEY_ALIAS=phototile" >> "$GITHUB_ENV"
+      - name: Build APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          # Gradle本体のダウンロードが一時的に失敗することがあるため再試行する
+          for i in 1 2 3; do
+            ./gradlew assembleRelease --no-daemon -PversionCode=${{ github.run_number }} -PversionName=1.0.${{ github.run_number }} && exit 0
+            echo "retry $i"; sleep 20
+          done
+          exit 1
+      - run: cp android/app/build/outputs/apk/release/app-release.apk photo-tile-maker.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: photo-tile-maker-apk
+          path: photo-tile-maker.apk
+      # リリース（APKの公開）は main への push と手動実行のときだけ。PRではビルド確認のみ
+      - if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: Photo Tile Maker 1.0.${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          make_latest: true
+          files: photo-tile-maker.apk
+          body: |
+            ## Android版のインストール方法
+            1. 下の **photo-tile-maker.apk** をスマホでダウンロード
+            2. ダウンロードしたファイルを開く（「提供元不明のアプリ」の許可を求められたら許可）
+            3. インストールしてアプリを起動
+
+            ${{ env.UPDATE_NOTE }}
+
+            ブラウザ版: https://rivrice.github.io/photo-tile-maker/
