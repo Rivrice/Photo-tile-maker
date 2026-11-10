@@ -61,6 +61,16 @@ export interface PhotoItem {
   rot: number;
   /** タイルの中での写真の回転角（度、時計回り） */
   angle: number;
+  /** 手動で選んだ構図の図形の調整（構図を手動で選んだときだけ効く） */
+  shape: ShapeEdit;
+}
+
+/** 構図の図形の調整：要の点を基準に、移動（写真の幅・高さ比）・拡大・回転（度） */
+export interface ShapeEdit {
+  x: number;
+  y: number;
+  scale: number;
+  angle: number;
 }
 
 /**

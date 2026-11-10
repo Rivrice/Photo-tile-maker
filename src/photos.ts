@@ -132,6 +132,7 @@ function finishItem(name: string, file: File | null, full: Drawable, date: numbe
     zoom: 1,
     rot: 0,
     angle: 0,
+    shape: { x: 0, y: 0, scale: 1, angle: 0 },
   };
 }
 

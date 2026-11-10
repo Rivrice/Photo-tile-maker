@@ -712,23 +712,8 @@ body.dragging, body.dragging * { -webkit-user-select: none; user-select: none; }
 .range-row .step {
   width: 36px; height: 32px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: inherit; font: inherit; font-size: 16px; cursor: pointer;
 }
-.trackpad {
-  display: none; position: relative; height: 150px; margin: 4px 0 12px; border-radius: 14px; border: 1px solid var(--line);
-  background-color: var(--bg); touch-action: none; -webkit-user-select: none; user-select: none; overflow: hidden;
-  background-image: linear-gradient(var(--line) 1px, transparent 1px), linear-gradient(90deg, var(--line) 1px, transparent 1px);
-  background-size: 25% 25%; background-position: center;
-}
-.trackpad span { position: absolute; left: 0; right: 0; bottom: 8px; text-align: center; font-size: 12px; color: var(--muted); pointer-events: none; }
-.trackpad.active { border-color: var(--accent); }
-.tp-dot {
-  position: absolute; width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%; background: var(--accent);
-  box-shadow: 0 0 0 4px rgba(232, 121, 43, .25); pointer-events: none;
-}
 @media (max-width: 900px) {
-  /* スマホ：位置はトラックパッドで、スライダーは隠す */
-  .trackpad { display: block; height: 112px; margin-top: 0; }
   .adj-head { display: none; }
-  .pos-slider { display: none; }
   .range-row { grid-template-columns: 44px 1fr 44px; }
   .range-row .step { width: 44px; height: 40px; }
 }
@@ -740,13 +725,43 @@ body.dragging, body.dragging * { -webkit-user-select: none; user-select: none; }
 .viewer-close svg { width: 20px; height: 20px; }
 .sw-name::after { font-family: inherit; }
 
-/* トラックパッド：中心の十字と、動かせない方向の表示 */
-.trackpad::before, .trackpad::after { content: ''; position: absolute; background: var(--muted); opacity: .35; pointer-events: none; }
-.trackpad::before { left: 50%; top: 10px; bottom: 10px; width: 1px; }
-.trackpad::after { top: 50%; left: 10px; right: 10px; height: 1px; }
-.trackpad.lock-x.lock-y .tp-dot { opacity: .35; }
-.pos-slider input:disabled { opacity: .35; }
-@media (max-width: 900px) { .trackpad { height: 140px; } }
-.trackpad { background-image: none; }
-.tp-hint { display: none; margin: -6px 0 12px; text-align: center; font-size: 12px; color: var(--muted); }
-@media (max-width: 900px) { .tp-hint { display: block; } }
+/* 微調整ダイヤル：目盛りをなぞって動かす */
+.dial { display: grid; grid-template-columns: 40px 1fr 40px; align-items: center; gap: 6px; margin-top: 6px; }
+.dial[hidden] { display: none; }
+.dial-end {
+  height: 34px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: inherit; font: inherit; font-size: 12px;
+  cursor: pointer; padding: 0; touch-action: manipulation; -webkit-user-select: none; user-select: none;
+}
+.dial-end:active { border-color: var(--accent); color: var(--accent); }
+.dial-track {
+  position: relative; height: 34px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); overflow: hidden;
+  cursor: ew-resize; touch-action: none; -webkit-user-select: none; user-select: none;
+}
+.dial-ticks {
+  position: absolute; inset: 6px 0 10px;
+  background-image: repeating-linear-gradient(90deg, var(--muted) 0 1px, transparent 1px 8px),
+    repeating-linear-gradient(90deg, var(--text) 0 1px, transparent 1px 40px);
+  background-size: 8px 55%, 40px 100%; background-repeat: repeat-x; background-position-y: center;
+  opacity: .35;
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 22%, #000 78%, transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 22%, #000 78%, transparent);
+}
+.dial-needle { position: absolute; left: 50%; top: 4px; bottom: 8px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--accent); }
+/* いまの位置（動かせる範囲の中のどこか） */
+.dial-pos { position: absolute; bottom: 3px; width: 14px; height: 3px; margin-left: -7px; border-radius: 2px; background: var(--accent); opacity: .7; transition: left .05s; }
+.dial.active .dial-track { border-color: var(--accent); }
+.dial.off { opacity: .4; pointer-events: none; }
+.dial-note { margin: 6px 0 0; font-size: 12px; color: var(--muted); }
+@media (max-width: 900px) {
+  .dial { grid-template-columns: 48px 1fr 48px; }
+  .dial-end, .dial-track { height: 42px; }
+  .dial-end { font-size: 13px; }
+}
+
+/* 構図パネルの中のタブ */
+.seg2 { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin-bottom: 10px; }
+.seg2[hidden] { display: none; }
+.seg2 button { border: 0; border-left: 1px solid var(--line); background: var(--bg); color: inherit; padding: 7px 0; font: inherit; font-size: 12px; cursor: pointer; }
+.seg2 button:first-child { border-left: 0; }
+.seg2 button.active { background: var(--text); color: var(--panel); }
+@media (max-width: 900px) { .seg2 button { min-height: 40px; font-size: 13px; } }

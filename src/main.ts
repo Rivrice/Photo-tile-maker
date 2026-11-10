@@ -164,7 +164,7 @@ function draw() {
   const def = getLayout(settings.layout);
   const out = outSize();
   $('#meta').textContent = usingSamples()
-    ? `サンプル表示中 ・ 写真を追加するとここに並びます（最大${MAX_PHOTOS}枚）`
+    ? `サンプル表示中　写真を追加するとここに並びます（最大${MAX_PHOTOS}枚）`
     : `${items.length}枚　${def.name}　書き出し ${out.w} × ${out.h} px`;
 }
 
@@ -787,25 +787,18 @@ function renderAdjPanel() {
   $('#adjAngleOut').textContent = `${p.angle > 0 ? '+' : ''}${p.angle}°`;
   const st = selectedTile();
   const pos = st ? getPos(st.p, st.t) : { u: 0.5, v: 0.5, canX: false, canY: false };
-  const ax = $<HTMLInputElement>('#adjX'), ay = $<HTMLInputElement>('#adjY');
-  ax.value = String(pos.u);
-  ay.value = String(pos.v);
-  ax.disabled = !pos.canX;
-  ay.disabled = !pos.canY;
-  // トラックパッドの点：動かせる範囲の中で、いまどこにいるか
-  const dot = $('#tpDot');
-  dot.style.left = `${pos.u * 100}%`;
-  dot.style.top = `${pos.v * 100}%`;
-  const msg = pos.canX && pos.canY
-    ? 'なぞって位置を調整'
-    : pos.canX
-      ? '左右に動かせます（上下はサイズを上げると動かせます）'
-      : pos.canY
-        ? '上下に動かせます（左右はサイズを上げると動かせます）'
-        : 'サイズを上げると動かせます';
-  $('#tpHint').textContent = msg;
-  $('#trackpad').classList.toggle('lock-x', !pos.canX);
-  $('#trackpad').classList.toggle('lock-y', !pos.canY);
+  // 動かせる方向のダイヤルだけを表示する
+  $('#dialX').hidden = !pos.canX;
+  $('#dialY').hidden = !pos.canY;
+  posDialX.update();
+  posDialY.update();
+  const note = $('#posNote');
+  note.hidden = pos.canX && pos.canY;
+  note.textContent = pos.canX
+    ? '上下に動かすには、サイズを上げてください。'
+    : pos.canY
+      ? '左右に動かすには、サイズを上げてください。'
+      : 'サイズを上げると、位置を動かせます。';
 }
 
 $('#adjZoom').addEventListener('input', () => {
@@ -833,18 +826,6 @@ $('#adjAngle').addEventListener('input', () => {
   renderAdjPanel();
   render();
 });
-for (const axis of ['X', 'Y'] as const) {
-  $(`#adj${axis}`).addEventListener('input', () => {
-    const st = selectedTile();
-    if (!st) return;
-    const { p, t } = st;
-    const pos = getPos(p, t);
-    const v = Number($<HTMLInputElement>(`#adj${axis}`).value);
-    setPos(p, t, axis === 'X' ? v : pos.u, axis === 'Y' ? v : pos.v);
-    renderAdjPanel();
-    render();
-  });
-}
 $('#adjReset').addEventListener('click', () => {
   const p = selected();
   if (!p) return;
@@ -866,54 +847,197 @@ $$('[data-step]').forEach((b) =>
   }),
 );
 
-// トラックパッド（スマホ）：点が指の動きに付いていく。サイズは変えない
-/** 指の移動量に対する点の移動量（1 未満で細かく動かせる） */
-const PAD_GAIN = 0.4;
-(() => {
-  const pad = $('#trackpad');
-  let st: { pid: number; x: number; y: number; u: number; v: number } | null = null;
-  pad.addEventListener('pointerdown', (e) => {
-    const s = selectedTile();
-    if (!s) return;
+// 微調整ダイヤル：目盛りを左右になぞると、指の動きより小さく値が動く。両端のボタンは少しずつ動かす
+interface DialOpts {
+  a: string;
+  b: string;
+  /** 現在値 0..1（null なら操作できない） */
+  get: () => number | null;
+  set: (v: number) => void;
+  /** ダイヤルの幅いっぱいになぞったときに動く量（0..1 の範囲に対して） */
+  span: number;
+  /** 両端のボタン1回で動く量 */
+  step: number;
+}
+function makeDial(root: HTMLElement, o: DialOpts) {
+  root.innerHTML = `<button type="button" class="dial-end" aria-label="${o.a}へ">${o.a}</button>
+    <div class="dial-track" role="slider" aria-label="${o.a}・${o.b}"><div class="dial-ticks"></div><i class="dial-needle"></i><i class="dial-pos"></i></div>
+    <button type="button" class="dial-end" aria-label="${o.b}へ">${o.b}</button>`;
+  const track = root.querySelector<HTMLElement>('.dial-track')!;
+  const ticks = root.querySelector<HTMLElement>('.dial-ticks')!;
+  const posEl = root.querySelector<HTMLElement>('.dial-pos')!;
+  const [endA, endB] = root.querySelectorAll<HTMLButtonElement>('.dial-end');
+  let spin = 0;
+  const clamp = (v: number) => Math.min(1, Math.max(0, v));
+  const update = () => {
+    const v = o.get();
+    root.classList.toggle('off', v == null);
+    posEl.style.left = `${clamp(v ?? 0.5) * 100}%`;
+    track.setAttribute('aria-valuenow', String(Math.round(clamp(v ?? 0.5) * 100)));
+    ticks.style.backgroundPositionX = `${spin}px`;
+  };
+  const nudge = (d: number) => {
+    const v = o.get();
+    if (v == null) return;
+    o.set(clamp(v + d));
+    spin += d > 0 ? 6 : -6;
+    update();
+  };
+  let st: { pid: number; x: number; v: number } | null = null;
+  track.addEventListener('pointerdown', (e) => {
+    const v = o.get();
+    if (v == null) return;
     try {
-      pad.setPointerCapture(e.pointerId);
+      track.setPointerCapture(e.pointerId);
     } catch {
       /* 合成イベントなど */
     }
-    const pos = getPos(s.p, s.t);
-    st = { pid: e.pointerId, x: e.clientX, y: e.clientY, u: pos.u, v: pos.v };
-    pad.classList.add('active');
+    st = { pid: e.pointerId, x: e.clientX, v };
+    root.classList.add('active');
   });
-  pad.addEventListener('pointermove', (e) => {
+  track.addEventListener('pointermove', (e) => {
     if (!st || e.pointerId !== st.pid) return;
-    const s = selectedTile();
-    if (!s) return;
-    const r = pad.getBoundingClientRect();
-    // 指と同じ向きへ、指の移動の PAD_GAIN 倍だけ点が動く（端まで行ったら指の基準を付け直す）
-    let u = st.u + ((e.clientX - st.x) / r.width) * PAD_GAIN;
-    let v = st.v + ((e.clientY - st.y) / r.height) * PAD_GAIN;
-    if (u < 0 || u > 1) {
-      u = Math.min(1, Math.max(0, u));
-      st.u = u;
+    const w = track.getBoundingClientRect().width || 1;
+    const dx = e.clientX - st.x;
+    let v = st.v + (dx / w) * o.span;
+    // 端まで行ったら基準を付け直して、戻すときにすぐ反応するように
+    if (v < 0 || v > 1) {
+      v = clamp(v);
+      st.v = v;
       st.x = e.clientX;
     }
-    if (v < 0 || v > 1) {
-      v = Math.min(1, Math.max(0, v));
-      st.v = v;
-      st.y = e.clientY;
-    }
-    setPos(s.p, s.t, u, v);
-    renderAdjPanel();
-    render();
+    spin += e.movementX || 0;
+    o.set(v);
+    update();
   });
   const end = (e: PointerEvent) => {
     if (!st || e.pointerId !== st.pid) return;
     st = null;
-    pad.classList.remove('active');
+    root.classList.remove('active');
   };
-  pad.addEventListener('pointerup', end);
-  pad.addEventListener('pointercancel', end);
-})();
+  track.addEventListener('pointerup', end);
+  track.addEventListener('pointercancel', end);
+  track.addEventListener(
+    'wheel',
+    (e) => {
+      e.preventDefault();
+      const w = track.getBoundingClientRect().width || 1;
+      nudge(((e.deltaX || e.deltaY) / w) * o.span * 0.5);
+    },
+    { passive: false },
+  );
+  // 両端のボタン：押し続けると連続で動く
+  for (const [btn, dir] of [
+    [endA, -1],
+    [endB, 1],
+  ] as const) {
+    let timer = 0;
+    const stop = () => {
+      clearTimeout(timer);
+      clearInterval(timer);
+    };
+    btn.addEventListener('pointerdown', () => {
+      nudge(dir * o.step);
+      stop();
+      timer = window.setTimeout(() => (timer = window.setInterval(() => nudge(dir * o.step), 60)), 380);
+    });
+    btn.addEventListener('pointerup', stop);
+    btn.addEventListener('pointerleave', stop);
+    btn.addEventListener('pointercancel', stop);
+    btn.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') nudge(dir * o.step);
+    });
+  }
+  update();
+  return { update };
+}
+
+// 写真の位置（動かせる範囲の中の割合）
+function posAxis(axis: 'u' | 'v') {
+  return {
+    get: () => {
+      const s = selectedTile();
+      if (!s) return null;
+      const pos = getPos(s.p, s.t);
+      if (!(axis === 'u' ? pos.canX : pos.canY)) return null;
+      return axis === 'u' ? pos.u : pos.v;
+    },
+    set: (n: number) => {
+      const s = selectedTile();
+      if (!s) return;
+      const pos = getPos(s.p, s.t);
+      setPos(s.p, s.t, axis === 'u' ? n : pos.u, axis === 'v' ? n : pos.v);
+      render();
+    },
+  };
+}
+const posDialX = makeDial($('#dialX'), { a: '左', b: '右', ...posAxis('u'), span: 0.3, step: 0.005 });
+const posDialY = makeDial($('#dialY'), { a: '上', b: '下', ...posAxis('v'), span: 0.3, step: 0.005 });
+
+// ---------- 図形の操作（構図を手動で選んだとき） ----------
+
+let compTab: 'type' | 'shape' = 'type';
+const SHAPE_SHIFT = 0.5;
+function shapeAxis(k: 'x' | 'y') {
+  return {
+    get: () => {
+      const p = selected();
+      return p ? (p.shape[k] + SHAPE_SHIFT) / (SHAPE_SHIFT * 2) : null;
+    },
+    set: (n: number) => {
+      const p = selected();
+      if (!p) return;
+      p.shape[k] = n * SHAPE_SHIFT * 2 - SHAPE_SHIFT;
+      render();
+    },
+  };
+}
+const shpDialX = makeDial($('#shpX'), { a: '左', b: '右', ...shapeAxis('x'), span: 0.25, step: 0.004 });
+const shpDialY = makeDial($('#shpY'), { a: '上', b: '下', ...shapeAxis('y'), span: 0.25, step: 0.004 });
+
+function renderShapePanel(p: PhotoItem) {
+  $<HTMLInputElement>('#shpScale').value = String(p.shape.scale);
+  $('#shpScaleOut').textContent = `${Math.round(p.shape.scale * 100)}%`;
+  $<HTMLInputElement>('#shpAngle').value = String(p.shape.angle);
+  $('#shpAngleOut').textContent = `${p.shape.angle > 0 ? '+' : ''}${p.shape.angle}°`;
+  shpDialX.update();
+  shpDialY.update();
+}
+$$('#compTabs button').forEach((b) =>
+  b.addEventListener('click', () => {
+    compTab = b.dataset.ct as 'type' | 'shape';
+    // 図形が見えていないと操作できないので、ガイド線を表示する
+    if (compTab === 'shape' && settings.overlay === 'none') {
+      $<HTMLButtonElement>('[data-ov="guide"]').click();
+      toast('図形が見えるように、ガイド線を表示しました');
+    }
+    renderSelPanel();
+  }),
+);
+$('#shpScale').addEventListener('input', () => {
+  const p = selected();
+  if (!p) return;
+  p.shape.scale = Math.min(2.5, Math.max(0.3, Number($<HTMLInputElement>('#shpScale').value)));
+  if (Math.abs(p.shape.scale - 1) <= 0.02) p.shape.scale = 1;
+  renderShapePanel(p);
+  render();
+});
+$('#shpAngle').addEventListener('input', () => {
+  const p = selected();
+  if (!p) return;
+  let a = Number($<HTMLInputElement>('#shpAngle').value);
+  for (const s of [-180, -90, -45, 0, 45, 90, 180]) if (Math.abs(a - s) <= 2) a = s;
+  p.shape.angle = a;
+  renderShapePanel(p);
+  render();
+});
+$('#shpReset').addEventListener('click', () => {
+  const p = selected();
+  if (!p) return;
+  p.shape = { x: 0, y: 0, scale: 1, angle: 0 };
+  renderShapePanel(p);
+  render();
+});
 
 // ---------- 写真の追加 ----------
 
@@ -1176,15 +1300,26 @@ function renderSelPanel() {
   $('#selName').textContent = p.name;
   const auto = COMP_LABELS[p.comp.type];
   const pct = Math.round(p.comp.score * 100);
-  $('#selComp').innerHTML = `${auto}<small>検出の確かさ ${pct}%</small>`;
+  $('#selComp').innerHTML = `${auto}<small>検出精度 ${pct}%</small>`;
   $('#selColors').innerHTML = p.stats.palette.map((c) => `<i style="background:${c}"></i>`).join('');
   $<HTMLSelectElement>('#selType').value = p.compOverride ?? 'auto';
+  // 構図を手動で選んだときだけ「図形の操作」タブを出す
+  const manual = p.compOverride != null && p.compOverride !== 'none';
+  if (!manual) compTab = 'type';
+  $('#compTabs').hidden = !manual;
+  $$('#compTabs button').forEach((b) => b.classList.toggle('active', b.dataset.ct === compTab));
+  $('#ctType').hidden = compTab !== 'type';
+  $('#ctShape').hidden = compTab !== 'shape';
+  if (manual) renderShapePanel(p);
 }
 $('#selType').addEventListener('change', () => {
   const p = selected();
   if (!p) return;
   const v = $<HTMLSelectElement>('#selType').value;
   p.compOverride = v === 'auto' ? null : (v as CompType | 'none');
+  // 構図を変えたら、図形の調整は最初から
+  p.shape = { x: 0, y: 0, scale: 1, angle: 0 };
+  renderSelPanel();
   if (!usingSamples()) renderList();
   render();
 });
@@ -1448,10 +1583,10 @@ $('#save').addEventListener('click', async () => {
     lastBlob = await exportImage();
     lastName = fileName();
     const o = outSize();
-    $('#progress').textContent = `${o.w}×${o.h}px ・ ${(lastBlob.size / 1024 / 1024).toFixed(1)}MB`;
+    $('#progress').textContent = `${o.w} × ${o.h} px　${(lastBlob.size / 1024 / 1024).toFixed(1)} MB`;
     const isTouch = matchMedia('(pointer: coarse)').matches;
     if (IS_NATIVE || ((IS_IOS || isTouch) && canShareFiles())) {
-      $('#shareDesc').textContent = `${o.w}×${o.h}px の画像を作成しました。`;
+      $('#shareDesc').textContent = `${o.w} × ${o.h} px の画像を作成しました。`;
       $('#shareSheet').hidden = false;
     } else {
       download(lastBlob, lastName);
