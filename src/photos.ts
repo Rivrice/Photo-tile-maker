@@ -104,22 +104,6 @@ function rotated(src: Drawable, q: number): HTMLCanvasElement {
   return c;
 }
 
-/** 写真を90°回転する（dir: 1 = 時計回り、-1 = 反時計回り）。構図は回転後の画像で検出し直す */
-export function rotatePhoto(p: PhotoItem, dir: 1 | -1) {
-  const q = (dir + 4) % 4;
-  const prev = p.preview;
-  p.preview = rotated(prev, q);
-  if (prev instanceof HTMLCanvasElement) prev.width = 0;
-  else release(prev);
-  p.mini = rotated(p.mini, q);
-  p.thumbUrl = p.mini.toDataURL('image/jpeg', 0.8);
-  [p.width, p.height] = [p.height, p.width];
-  p.rot = (p.rot + q) % 4;
-  p.comp = analyze(p.preview).comp;
-  p.pan = null;
-  p.zoom = 1;
-}
-
 function thumb(src: Drawable) {
   const s = Math.min(1, THUMB_EDGE / Math.max(src.width, src.height));
   return resizeTo(src, 0, 0, src.width, src.height, src.width * s, src.height * s);
@@ -147,6 +131,7 @@ function finishItem(name: string, file: File | null, full: Drawable, date: numbe
     pan: null,
     zoom: 1,
     rot: 0,
+    angle: 0,
   };
 }
 

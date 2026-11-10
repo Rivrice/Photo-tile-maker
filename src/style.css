@@ -231,6 +231,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
   body[data-tab='layout'] .panel.right details[data-tab='layout']:not([hidden]),
   body[data-tab='sort'] .panel.right details[data-tab='sort']:not([hidden]),
   body[data-tab='comp'] .panel.right details[data-tab='comp']:not([hidden]),
+  body[data-tab='adjust'] .panel.right details[data-tab='adjust']:not([hidden]),
   body[data-tab='style'] .panel.right details[data-tab='style']:not([hidden]),
   body[data-tab='save'] .panel.right details[data-tab='save']:not([hidden]) { display: block; }
   summary { pointer-events: none; padding-bottom: 6px; color: var(--muted); font-size: 12px; }
@@ -690,3 +691,43 @@ body.dragging, body.dragging * { -webkit-user-select: none; user-select: none; }
   color: #fff; opacity: .55; font-size: 12px; pointer-events: none;
 }
 .viewer canvas { will-change: transform; }
+
+/* プレビュー全体の拡大 */
+.stage-inner { overflow: hidden; }
+#preview { flex: none; max-width: none; max-height: none; transform-origin: 50% 50%; }
+.zoom-pill {
+  position: absolute; left: 12px; top: 50%; transform: translateY(-50%); margin-top: 5px; height: 32px; padding: 0 12px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--panel); color: inherit; font: inherit; font-size: 12px; cursor: pointer;
+}
+.zoom-pill[hidden] { display: none; }
+@media (max-width: 900px) { .zoom-pill { margin-top: -3px; } }
+.stage-tools { min-height: 46px; }
+@media (max-width: 900px) { .stage-tools { min-height: 40px; } }
+
+/* 写真の調整 */
+.adj-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.adj-head img { width: 44px; height: 44px; object-fit: cover; border-radius: 8px; flex: none; background: var(--line); }
+.range-row { display: grid; grid-template-columns: 36px 1fr 36px; align-items: center; gap: 6px; }
+.range-row .step {
+  width: 36px; height: 32px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: inherit; font: inherit; font-size: 16px; cursor: pointer;
+}
+.trackpad {
+  display: none; position: relative; height: 150px; margin: 4px 0 12px; border-radius: 14px; border: 1px solid var(--line);
+  background-color: var(--bg); touch-action: none; -webkit-user-select: none; user-select: none; overflow: hidden;
+  background-image: linear-gradient(var(--line) 1px, transparent 1px), linear-gradient(90deg, var(--line) 1px, transparent 1px);
+  background-size: 25% 25%; background-position: center;
+}
+.trackpad span { position: absolute; left: 0; right: 0; bottom: 8px; text-align: center; font-size: 12px; color: var(--muted); pointer-events: none; }
+.trackpad.active { border-color: var(--accent); }
+.tp-dot {
+  position: absolute; width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%; background: var(--accent);
+  box-shadow: 0 0 0 4px rgba(232, 121, 43, .25); pointer-events: none;
+}
+@media (max-width: 900px) {
+  /* スマホ：位置はトラックパッドで、スライダーは隠す */
+  .trackpad { display: block; height: 112px; margin-top: 0; }
+  .adj-head { display: none; }
+  .pos-slider { display: none; }
+  .range-row { grid-template-columns: 44px 1fr 44px; }
+  .range-row .step { width: 44px; height: 40px; }
+}

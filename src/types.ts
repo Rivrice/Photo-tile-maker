@@ -59,6 +59,8 @@ export interface PhotoItem {
   zoom: number;
   /** 元ファイルからの回転（時計回り 90° × rot） */
   rot: number;
+  /** タイルの中での写真の回転角（度、時計回り） */
+  angle: number;
 }
 
 /**
