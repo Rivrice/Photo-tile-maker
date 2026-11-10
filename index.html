@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#ffffff" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Photo Tile" />
+    <meta name="description" content="複数の写真を、構図や色を読み取る自動レイアウトでタイル状に並べるWebアプリ" />
+    <title>Photo Tile Maker</title>
+    <link rel="icon" type="image/png" href="./icons/favicon-64.png" />
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+  </head>
+  <body data-tab="layout">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <h1>Photo Tile Maker</h1>
+      </div>
+      <div class="top-actions">
+        <a class="sister-link" href="https://rivrice.github.io/exif-frame-maker/" target="_blank" rel="noopener" title="姉妹アプリ Exif Frame Maker">
+          <span class="sister-mark" aria-hidden="true"></span><span class="sister-text">Exif Frame Maker</span>
+        </a>
+        <button id="aboutBtn" class="icon-btn" aria-label="このアプリについて" title="このアプリについて">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.01"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <main class="app">
+      <aside class="panel left">
+        <label class="drop" id="drop">
+          <input id="file" type="file" multiple hidden />
+          <strong>写真を追加</strong>
+          <span>クリック or ドラッグ＆ドロップ</span>
+          <small>JPEG / PNG / WebP / AVIF / HEIC（対応ブラウザ）・最大20枚</small>
+        </label>
+        <div class="list-head">
+          <span id="count">0 / 20枚</span>
+          <button id="clear" class="link">すべて削除</button>
+        </div>
+        <ul id="list" class="photo-list"></ul>
+        <label for="file" class="add-tile" aria-label="写真を追加"><span>＋</span>写真を追加</label>
+        <button class="strip-toggle" id="stripToggle" aria-expanded="true" aria-label="写真の一覧を隠す"></button>
+        <p class="disclaimer">一覧はドラッグで並べ替えできます（スマホは長押ししてから）。写真は端末の外に送信されません。</p>
+      </aside>
+
+      <section class="stage">
+        <div class="stage-tools">
+          <div class="mode-seg" id="modeSeg" role="radiogroup" aria-label="ドラッグ操作">
+            <button data-mode="swap" class="active">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4 3 8l4 4M3 8h13M17 20l4-4-4-4M21 16H8"/></svg>入れ替え
+            </button>
+            <button data-mode="pan">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v18M3 12h18M12 3 9.5 5.5M12 3l2.5 2.5M12 21l-2.5-2.5M12 21l2.5-2.5M3 12l2.5-2.5M3 12l2.5 2.5M21 12l-2.5-2.5M21 12l-2.5 2.5"/></svg>位置調整
+            </button>
+          </div>
+        </div>
+        <div class="stage-inner" id="stage">
+          <canvas id="preview"></canvas>
+          <div class="busy" id="busy" hidden>処理中…</div>
+        </div>
+        <p class="stage-meta" id="meta"></p>
+      </section>
+
+      <aside class="panel right">
+        <details open data-tab="layout">
+          <summary>レイアウト</summary>
+          <div id="layouts" class="presets"></div>
+        </details>
+
+        <details open data-tab="layout">
+          <summary>形・比率</summary>
+          <div class="field">
+            <span>出力比率</span>
+            <select id="aspect">
+              <option value="1:1">1:1 正方形</option>
+              <option value="4:5">4:5 縦（Instagram）</option>
+              <option value="3:4">3:4 縦</option>
+              <option value="2:3">2:3 縦</option>
+              <option value="9:16">9:16 ストーリー</option>
+              <option value="3:2">3:2 横</option>
+              <option value="4:3">4:3 横</option>
+              <option value="16:9">16:9 横</option>
+              <option value="1:1.414">A判 縦（印刷）</option>
+            </select>
+          </div>
+          <div class="field" id="columnsField">
+            <span>列数 <output id="columnsOut"></output></span>
+            <input id="columns" type="range" min="0" max="8" step="1" />
+          </div>
+          <div class="field" id="slantField">
+            <span>斜めカット <output id="slantOut"></output></span>
+            <input id="slant" type="range" min="-30" max="30" step="1" />
+          </div>
+          <button class="btn-wide" id="reseed">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15.5-6.2L21 8M21 3v5h-5M21 12a9 9 0 0 1-15.5 6.2L3 16M3 21v-5h5"/></svg>
+            別のパターンにする
+          </button>
+        </details>
+
+        <details open data-tab="sort">
+          <summary>並べ替え</summary>
+          <div class="sort-grid" id="sorts">
+            <button data-sort="bright"><i class="sw-bright"></i>明るい順</button>
+            <button data-sort="dark"><i class="sw-dark"></i>暗い順</button>
+            <button data-sort="hue"><i class="sw-hue"></i>色相（虹色）</button>
+            <button data-sort="sat"><i class="sw-sat"></i>鮮やかな順</button>
+            <button data-sort="tone"><i class="sw-tone"></i>グラデーション</button>
+            <button data-sort="comp"><i class="sw-comp"></i>構図ごと</button>
+            <button data-sort="date"><i class="sw-date"></i>撮影日時</button>
+            <button data-sort="name"><i class="sw-name"></i>ファイル名</button>
+            <button data-sort="shuffle"><i class="sw-shuffle"></i>シャッフル</button>
+            <button data-sort="reverse"><i class="sw-reverse"></i>逆順</button>
+          </div>
+          <p class="hint">プレビューの写真をドラッグして、別の写真の上で離すと入れ替わります。</p>
+        </details>
+
+        <details open data-tab="sort">
+          <summary>おまかせ配置</summary>
+          <button class="btn-wide accent" id="autoFit">タイルの形に合う写真を自動で割り当てる</button>
+          <p class="hint">縦長のタイルには縦長の写真、横長のタイルには横長の写真が入るように並べ直し、トリミングを最小にします。</p>
+        </details>
+
+        <details open data-tab="comp">
+          <summary>構図の図形</summary>
+          <div class="seg4" id="overlaySeg" role="radiogroup" aria-label="構図の図形">
+            <button data-ov="none">なし</button>
+            <button data-ov="guide">ガイド線</button>
+            <button data-ov="accent">アクセント</button>
+            <button data-ov="cutout">切り抜き</button>
+          </div>
+          <p class="hint" id="overlayHint"></p>
+          <div class="subhead">図形の色</div>
+          <div class="swatches" id="ovSwatches"></div>
+          <label class="switch"><input type="checkbox" id="showLabel" /><span>構図名をタイルに表示</span></label>
+          <label class="switch"><input type="checkbox" id="smartCrop" /><span>構図を保ってトリミング</span></label>
+        </details>
+
+        <details open data-tab="comp" id="selPanel">
+          <summary>選択中の写真</summary>
+          <div class="sel-empty" id="selEmpty">プレビューの写真をタップすると、検出した構図の確認・変更や位置の調整ができます。</div>
+          <div id="selBody" hidden>
+            <div class="sel-head">
+              <img id="selThumb" alt="" />
+              <div>
+                <div class="sel-name" id="selName"></div>
+                <div class="sel-comp" id="selComp"></div>
+                <div class="sel-colors" id="selColors"></div>
+              </div>
+            </div>
+            <div class="field">
+              <span>構図（図形の種類）</span>
+              <select id="selType">
+                <option value="auto">自動検出</option>
+                <option value="center">日の丸構図</option>
+                <option value="thirds">三分割構図</option>
+                <option value="golden">黄金比構図</option>
+                <option value="diagonal">対角線構図</option>
+                <option value="horizon">水平線構図</option>
+                <option value="symmetry">シンメトリー構図</option>
+                <option value="none">図形なし</option>
+              </select>
+            </div>
+            <div class="field">
+              <span>ズーム <output id="selZoomOut"></output></span>
+              <input id="selZoom" type="range" min="1" max="3" step="0.01" />
+            </div>
+            <div class="sel-actions">
+              <button class="btn-sm" id="selReset">位置を自動に戻す</button>
+              <button class="btn-sm ghost danger" id="selDelete">この写真を削除</button>
+            </div>
+          </div>
+        </details>
+
+        <details open data-tab="style">
+          <summary>すき間・余白</summary>
+          <div class="field">
+            <span>すき間 <output id="gapOut"></output></span>
+            <input id="gap" type="range" min="0" max="40" step="1" />
+          </div>
+          <div class="field">
+            <span>外側の余白 <output id="marginOut"></output></span>
+            <input id="margin" type="range" min="0" max="90" step="1" />
+          </div>
+          <div class="field" id="radiusField">
+            <span>角の丸み <output id="radiusOut"></output></span>
+            <input id="radius" type="range" min="0" max="60" step="1" />
+          </div>
+        </details>
+
+        <details open data-tab="style">
+          <summary>背景色</summary>
+          <div class="subhead first">定番</div>
+          <div class="swatches" id="bgBase"></div>
+          <div class="subhead">写真から抽出</div>
+          <div class="swatches" id="bgPhoto"></div>
+          <div class="field-inline"><input type="color" id="bgCustom" aria-label="背景色を選ぶ" /><span>自由に選ぶ</span></div>
+        </details>
+
+        <details open data-tab="save">
+          <summary>書き出し</summary>
+          <div class="actions">
+            <button id="save" class="primary">画像を保存</button>
+          </div>
+          <p class="progress" id="progress"></p>
+          <div class="field">
+            <span>長辺のサイズ</span>
+            <select id="outEdge">
+              <option value="1080">1080px（SNS向け・軽量）</option>
+              <option value="1600">1600px</option>
+              <option value="2048">2048px</option>
+              <option value="3000">3000px</option>
+              <option value="4096">4096px（印刷向け）</option>
+            </select>
+          </div>
+          <div class="field">
+            <span>形式</span>
+            <select id="format">
+              <option value="image/jpeg">JPEG</option>
+              <option value="image/png">PNG</option>
+              <option value="image/webp">WebP</option>
+            </select>
+          </div>
+          <div class="field" id="qualityField">
+            <span>画質 <output id="qualityOut"></output></span>
+            <input id="quality" type="range" min="0.5" max="1" step="0.01" />
+          </div>
+          <p class="hint">写真は、それぞれのタイルの大きさに合わせて解像度を落としてから配置します。元の写真より大きく引き伸ばすことはなく、ファイルも軽くなります。</p>
+        </details>
+      </aside>
+    </main>
+
+    <nav class="tabbar" id="tabbar" aria-label="設定">
+      <button data-tab="layout" class="active"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v18M12 12h9"/></svg>レイアウト</button>
+      <button data-tab="sort"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4v16M3 16l4 4 4-4M17 20V4M13 8l4-4 4 4"/></svg>並べ替え</button>
+      <button data-tab="comp"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M15 3v18M3 9h18M3 15h18" opacity=".55"/><circle cx="15" cy="9" r="2.4"/></svg>構図</button>
+      <button data-tab="style"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a9 9 0 1 0 0 18c1.2 0 1.8-.9 1.4-2-.5-1.2.3-2.5 1.6-2.5H17a4 4 0 0 0 4-4C21 7 17 3 12 3z"/><circle cx="7.5" cy="11" r="1.2"/><circle cx="10.5" cy="7.3" r="1.2"/><circle cx="15" cy="7.8" r="1.2"/></svg>スタイル</button>
+      <button data-tab="save"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5M4 19h16"/></svg>保存</button>
+    </nav>
+
+    <div class="sheet-backdrop" id="shareSheet" hidden>
+      <div class="sheet-card" role="dialog" aria-modal="true" aria-labelledby="shareTitle">
+        <h2 id="shareTitle">書き出しが完了しました</h2>
+        <p id="shareDesc"></p>
+        <button id="shareBtn" class="primary">写真に保存・共有</button>
+        <button id="shareDl">ファイルとしてダウンロード</button>
+        <button id="shareClose" class="link">閉じる</button>
+      </div>
+    </div>
+
+    <div class="sheet-backdrop" id="aboutSheet" hidden>
+      <div class="sheet-card about" role="dialog" aria-modal="true" aria-labelledby="aboutTitle">
+        <h2 id="aboutTitle">Photo Tile Maker について</h2>
+        <div class="about-body">
+          <h3>Exif Frame Maker の姉妹アプリです</h3>
+          <p>
+            写真に撮影データ入りのフレームを付ける <a href="https://rivrice.github.io/exif-frame-maker/" target="_blank" rel="noopener">Exif Frame Maker</a> と同じ開発元によるアプリです。
+            最大20枚の写真を、色や明るさ・構図を読み取りながら自動でタイル状にレイアウトします。
+          </p>
+          <h3>構図の検出について</h3>
+          <p>
+            日の丸構図・三分割構図・黄金比構図・対角線構図・水平線構図・シンメトリー構図を、写真の明るさや色の差、輪郭の向きから簡易的に推定しています。
+            判定が合わないときは、「構図」タブの「選択中の写真」から手動で変更できます。
+          </p>
+          <h3>プライバシー</h3>
+          <p>
+            写真の読み込み・解析・書き出しはすべてお使いの端末内で行われ、写真が外部に送信されることはありません。
+            書き出した画像には、位置情報（GPS）を含むExif情報は残りません。アクセス解析や広告も使用していません。
+          </p>
+          <h3>HEIC（iPhoneの写真）</h3>
+          <p>
+            HEIC画像は端末・ブラウザに標準搭載された機能で読み込みます（iPhone/MacのSafari など）。
+            非対応のブラウザでは、JPEGに変換してから読み込んでください。
+          </p>
+          <h3>ライセンス</h3>
+          <p>
+            本アプリは MIT ライセンスで公開しており、商用利用も可能です。使用しているオープンソースソフトウェアとフォントのライセンスは
+            <a href="./THIRD_PARTY_LICENSES.txt" target="_blank" rel="noopener">サードパーティライセンス一覧</a>をご覧ください。
+          </p>
+          <p class="muted">© 2026 Rivrice</p>
+        </div>
+        <button id="aboutClose" class="link">閉じる</button>
+      </div>
+    </div>
+
+    <div class="drag-ghost" id="ghost" hidden><img alt="" /></div>
+    <div class="toast" id="toast" hidden></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
