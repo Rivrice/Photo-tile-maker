@@ -1,6 +1,7 @@
 // 写真の読み込みと縮小。元ファイルは保持し、必要になった解像度だけを取り出す。
 import exifr from 'exifr';
 import { analyze } from './analyze';
+import { heicToJpegNative } from './native';
 import type { PhotoItem } from './types';
 
 export const MAX_PHOTOS = 20;
@@ -77,7 +78,14 @@ async function decode(file: Blob, resize?: { w: number; h: number }): Promise<Dr
       /* HEIC など：img 要素で再挑戦 */
     }
   }
-  return decodeViaImg(file);
+  try {
+    return await decodeViaImg(file);
+  } catch (e) {
+    // Androidアプリ版：WebViewが読めないHEICはOS標準のデコーダーでJPEGに変換
+    const jpeg = await heicToJpegNative(file).catch(() => null);
+    if (!jpeg) throw e;
+    return resize ? await decode(jpeg, resize) : await decodeViaImg(jpeg);
+  }
 }
 
 function release(src: Drawable) {

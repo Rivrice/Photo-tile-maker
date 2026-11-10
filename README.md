@@ -39,6 +39,26 @@ npm run preview  # ビルド結果の確認
 `.github/workflows/deploy.yml` が `main` への push で自動ビルド・デプロイします。
 初回のみリポジトリの **Settings → Pages → Build and deployment → Source** を **GitHub Actions** に設定してください。
 
+## Android版（APK）
+
+Exif Frame Maker と同じく [Capacitor](https://capacitorjs.com/) で Android アプリにしています（アプリID: `io.github.rivrice.phototile`）。
+
+- `.github/workflows/android.yml` が `main` への push で APK をビルドし、**Releases** に `photo-tile-maker.apk` を公開します（PR ではビルド確認のみ）。
+- 署名鍵はリポジトリに含めず、GitHub Secrets から渡します。
+  - `ANDROID_KEYSTORE_BASE64`：キーストア（PKCS12）を Base64 にしたもの
+  - `ANDROID_KEYSTORE_PASSWORD`：キーストアと鍵のパスワード（共通）
+  - 鍵のエイリアスは `phototile`
+  - 未登録のときは一時的な鍵で署名されます（更新時にアンインストールが必要）
+- アプリ版では、書き出した画像を共有シート（ギャラリー / Googleフォトなど）か端末の `Documents/PhotoTileMaker` に保存できます。WebView が読めない HEIC は Android 標準のデコーダーで変換します。
+
+ローカルでビルドする場合（Android SDK と JDK 21 が必要）：
+
+```bash
+npm run build
+npx cap sync android
+cd android && ./gradlew assembleRelease
+```
+
 ## 構成
 
 | ファイル | 内容 |
@@ -47,6 +67,7 @@ npm run preview  # ビルド結果の確認
 | `src/analyze.ts` | 色・明るさの統計と構図の推定 |
 | `src/photos.ts` | 読み込み・縮小・書き出し用の切り出し |
 | `src/render.ts` | タイル・構図図形の描画（プレビュー／書き出し共通） |
+| `src/native.ts` | Androidアプリ版の保存・共有・HEIC変換 |
 | `src/main.ts` | UI |
 
 ## ライセンス
