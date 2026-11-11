@@ -63,6 +63,8 @@ export interface PhotoItem {
   angle: number;
   /** 手動で選んだ構図の図形の調整（構図を手動で選んだときだけ効く） */
   shape: ShapeEdit;
+  /** 書き出しに引き継ぐ Exif（カメラ・レンズなど）。サンプルは無し */
+  meta?: import('./exifwrite').Meta;
 }
 
 /** 構図の図形の調整：要の点を基準に、移動（写真の幅・高さ比）・拡大・回転（度） */

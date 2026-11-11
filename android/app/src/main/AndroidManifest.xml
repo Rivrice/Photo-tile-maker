@@ -35,6 +35,11 @@
         </provider>
     </application>
 
+    <!-- 書き出した画像を Exif Frame Maker アプリで開くため -->
+    <queries>
+        <package android:name="io.github.rivrice.exifframe" />
+    </queries>
+
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
