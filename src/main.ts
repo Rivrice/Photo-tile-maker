@@ -1,3 +1,4 @@
+import { hexToHsl, hslToHex, loadHistory, normalizeHex, pushHistory, rgbToHex } from './colorutil';
 import '@fontsource/inter/400.css';
 import '@fontsource/inter/600.css';
 import '@fontsource/inter/700.css';
@@ -1416,7 +1417,7 @@ function renderBgSwatches() {
     }
     for (const c of picked) ph.appendChild(swatch(c, settings.bg === c, () => setBg(c)));
   }
-  $<HTMLInputElement>('#bgCustom').value = settings.bg;
+  syncColorEditor();
 }
 function setBg(c: string) {
   settings.bg = c;
@@ -1425,7 +1426,258 @@ function setBg(c: string) {
   render();
   renderLayoutThumbs();
 }
-$('#bgCustom').addEventListener('input', () => setBg($<HTMLInputElement>('#bgCustom').value));
+
+// ---------- 背景色：カスタムカラー（色の調整・スポイト・最近使った色） ----------
+// Exif Frame Maker と同じ作り
+
+let colorHistory = loadHistory();
+let picking = false;
+/** スライダー操作中は値の丸めで色相が飛ばないよう、HSL を保持しておく */
+let hsl: [number, number, number] = hexToHsl(settings.bg);
+/** カスタムカラーで最後に決めた色（パネルを閉じる・アプリを離れるときに「最近使った色」へ記録する） */
+let lastCustom: string | null = null;
+
+function commitHistory() {
+  if (!lastCustom) return;
+  colorHistory = pushHistory(colorHistory, lastCustom);
+  lastCustom = null;
+  renderHistory();
+}
+function sliderBg() {
+  const [hh, s, l] = hsl;
+  $('#ceH').style.background = `linear-gradient(to right, ${[0, 60, 120, 180, 240, 300, 360].map((x) => hslToHex(x, Math.max(s, 60), 50)).join(',')})`;
+  $('#ceS').style.background = `linear-gradient(to right, ${hslToHex(hh, 0, l)}, ${hslToHex(hh, 100, l)})`;
+  $('#ceL').style.background = `linear-gradient(to right, #000, ${hslToHex(hh, s, 50)}, #fff)`;
+}
+function syncColorEditor(keepHsl = false) {
+  const hex = normalizeHex(settings.bg) ?? '#ffffff';
+  if (!keepHsl) hsl = hexToHsl(hex);
+  $('#cePreview').style.background = hex;
+  const hexInput = $<HTMLInputElement>('#ceHex');
+  if (document.activeElement !== hexInput) hexInput.value = hex;
+  $<HTMLInputElement>('#ceH').value = String(hsl[0]);
+  $<HTMLInputElement>('#ceS').value = String(hsl[1]);
+  $<HTMLInputElement>('#ceL').value = String(hsl[2]);
+  sliderBg();
+}
+function renderHistory() {
+  const box = $('#colorHistory');
+  box.innerHTML = '';
+  if (!colorHistory.length) {
+    box.innerHTML = '<span class="hint">調整した色は、ここに追加されます</span>';
+    return;
+  }
+  for (const c of colorHistory) box.appendChild(swatch(c, settings.bg === c, () => setBg(c)));
+}
+/** スライダーを「つまみを動かしたときだけ」反応させる（スマホでの誤タップ防止） */
+function thumbOnly(input: HTMLInputElement) {
+  const wrap = input.parentElement!;
+  input.classList.add('thumb-only');
+  const min = Number(input.min), max = Number(input.max);
+  const geo = () => {
+    const r = input.getBoundingClientRect();
+    const tw = r.height + 10;
+    const frac = (Number(input.value) - min) / (max - min);
+    return { r, tw, cx: r.left + tw / 2 + frac * (r.width - tw) };
+  };
+  let drag: { id: number; offset: number } | null = null;
+  wrap.addEventListener('pointerdown', (e) => {
+    const { r, tw, cx } = geo();
+    const hit = Math.abs(e.clientX - cx) <= tw / 2 + 10 && e.clientY >= r.top - 14 && e.clientY <= r.bottom + 14;
+    if (!hit) return;
+    e.preventDefault();
+    wrap.setPointerCapture(e.pointerId);
+    drag = { id: e.pointerId, offset: e.clientX - cx };
+    input.classList.add('dragging');
+  });
+  wrap.addEventListener('pointermove', (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    const { r, tw } = geo();
+    const frac = Math.min(1, Math.max(0, (e.clientX - drag.offset - r.left - tw / 2) / (r.width - tw)));
+    const v = String(Math.round(min + frac * (max - min)));
+    if (v !== input.value) {
+      input.value = v;
+      input.dispatchEvent(new Event('input'));
+    }
+  });
+  const end = (e: PointerEvent) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    drag = null;
+    input.classList.remove('dragging');
+    input.dispatchEvent(new Event('change'));
+  };
+  wrap.addEventListener('pointerup', end);
+  wrap.addEventListener('pointercancel', end);
+  wrap.addEventListener('click', (e) => e.preventDefault());
+}
+function stopPicking() {
+  picking = false;
+  document.body.classList.remove('picking');
+  $('#loupe').hidden = true;
+  $('#ceDropper').classList.remove('active');
+}
+/** プレビュー上の位置の色 */
+function colorAt(e: PointerEvent): string | null {
+  const r = preview.getBoundingClientRect();
+  const x = Math.floor(((e.clientX - r.left) / r.width) * preview.width);
+  const y = Math.floor(((e.clientY - r.top) / r.height) * preview.height);
+  if (x < 0 || y < 0 || x >= preview.width || y >= preview.height) return null;
+  const d = preview.getContext('2d')!.getImageData(x, y, 1, 1).data;
+  return rgbToHex(d[0], d[1], d[2]);
+}
+function showLoupe(e: PointerEvent, c: string | null) {
+  const lp = $('#loupe');
+  if (!c) {
+    lp.hidden = true;
+    return;
+  }
+  const st = $('#stage').getBoundingClientRect();
+  lp.hidden = false;
+  lp.style.background = c;
+  lp.textContent = c;
+  lp.style.color = hexToHsl(c)[2] > 60 ? '#111' : '#fff';
+  const above = e.pointerType === 'touch' ? 70 : 40;
+  lp.style.left = `${e.clientX - st.left}px`;
+  lp.style.top = `${e.clientY - st.top - above}px`;
+}
+function bindColorEditor() {
+  const ids: [string, number][] = [['#ceH', 0], ['#ceS', 1], ['#ceL', 2]];
+  let raf = 0;
+  for (const [id, i] of ids) {
+    const el = $<HTMLInputElement>(id);
+    el.addEventListener('input', () => {
+      hsl[i] = Number(el.value);
+      // 無彩色のまま色相を動かしても色が変わらないので、色が見えるところまで彩度を上げる
+      if (i === 0 && hsl[1] < 8) {
+        hsl[1] = 60;
+        if (hsl[2] < 15 || hsl[2] > 85) hsl[2] = 50;
+      }
+      settings.bg = hslToHex(...hsl);
+      lastCustom = settings.bg;
+      saveSettings();
+      syncColorEditor(true);
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => render());
+    });
+    el.addEventListener('change', () => {
+      renderBgSwatches();
+      renderLayoutThumbs();
+      syncColorEditor(true);
+    });
+    thumbOnly(el);
+  }
+  const hexInput = $<HTMLInputElement>('#ceHex');
+  const commitHex = () => {
+    const v = normalizeHex(hexInput.value);
+    if (v) {
+      lastCustom = v;
+      setBg(v);
+    } else hexInput.value = settings.bg;
+  };
+  hexInput.addEventListener('change', commitHex);
+  hexInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      commitHex();
+      hexInput.blur();
+    }
+  });
+  // スポイト：プレビューをタップして色を取る。なぞるとルーペで確認できる
+  $('#ceDropper').addEventListener('click', () => {
+    if (picking) return stopPicking();
+    picking = true;
+    document.body.classList.add('picking');
+    $('#ceDropper').classList.add('active');
+    toast('プレビューをタップして色を選んでください', 3000);
+  });
+  // ふだんのタップ操作（タイルの選択など）より先に受け取る
+  const stage = $('#stage');
+  let down = false;
+  stage.addEventListener(
+    'pointerdown',
+    (e) => {
+      if (!picking || e.target !== preview) return;
+      e.preventDefault();
+      e.stopPropagation();
+      down = true;
+      stage.setPointerCapture(e.pointerId);
+      showLoupe(e, colorAt(e));
+    },
+    true,
+  );
+  stage.addEventListener(
+    'pointermove',
+    (e) => {
+      if (!picking) return;
+      e.stopPropagation();
+      if (e.pointerType === 'touch' && !down) return;
+      showLoupe(e, colorAt(e));
+    },
+    true,
+  );
+  stage.addEventListener(
+    'pointerup',
+    (e) => {
+      if (!picking || !down) return;
+      e.stopPropagation();
+      down = false;
+      const c = colorAt(e);
+      if (!c) {
+        $('#loupe').hidden = true;
+        return;
+      }
+      stopPicking();
+      lastCustom = c;
+      setBg(c);
+      toast(`${c} を背景色にしました`, 2000);
+    },
+    true,
+  );
+  stage.addEventListener(
+    'pointercancel',
+    () => {
+      down = false;
+      $('#loupe').hidden = true;
+    },
+    true,
+  );
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && picking) stopPicking();
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') commitHistory();
+  });
+  window.addEventListener('pagehide', commitHistory);
+  renderHistory();
+}
+// カスタムカラー：オンにしたときだけ色調整パネルを開く（端末ごとの表示設定）
+const CUSTOM_COLOR_KEY = 'photo-tile-maker:custom-color';
+function bindCustomColor() {
+  const cb = $<HTMLInputElement>('#customColor');
+  const apply = () => {
+    $('#customPanel').hidden = !cb.checked;
+    if (!cb.checked) {
+      stopPicking();
+      commitHistory();
+    }
+  };
+  try {
+    cb.checked = localStorage.getItem(CUSTOM_COLOR_KEY) === '1';
+  } catch {
+    /* noop */
+  }
+  apply();
+  cb.addEventListener('change', () => {
+    apply();
+    try {
+      localStorage.setItem(CUSTOM_COLOR_KEY, cb.checked ? '1' : '0');
+    } catch {
+      /* noop */
+    }
+    if (cb.checked) $('#customPanel').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  });
+}
+bindColorEditor();
+bindCustomColor();
 
 function renderOvSwatches() {
   const host = $('#ovSwatches');

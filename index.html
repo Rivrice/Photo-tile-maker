@@ -54,6 +54,7 @@
         </div>
         <div class="stage-inner" id="stage">
           <canvas id="preview"></canvas>
+          <div class="loupe" id="loupe" hidden></div>
           <div class="busy" id="busy" hidden>処理中…</div>
         </div>
         <p class="stage-meta" id="meta"></p>
@@ -277,7 +278,24 @@
           <div class="swatches" id="bgBase"></div>
           <div class="subhead">写真から抽出</div>
           <div class="swatches" id="bgPhoto"></div>
-          <div class="field-inline"><input type="color" id="bgCustom" aria-label="背景色を選ぶ" /><span>自由に選ぶ</span></div>
+          <label class="switch custom-switch"><input type="checkbox" id="customColor" aria-controls="customPanel" /><span>カスタムカラーを使用</span></label>
+          <div class="custom-panel" id="customPanel" hidden>
+            <div class="color-editor">
+              <div class="ce-top">
+                <span class="ce-preview" id="cePreview"></span>
+                <input id="ceHex" type="text" maxlength="7" spellcheck="false" autocomplete="off" aria-label="カラーコード" />
+                <button class="ce-dropper" id="ceDropper" title="プレビューから色を取る">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m14 7 3 3M5 19l1.5-.5L17 8l-1-1-10.5 10.5zM16.5 4.5a2.1 2.1 0 0 1 3 3L18 9l-3-3z"/></svg>
+                  スポイト
+                </button>
+              </div>
+              <label class="ce-slider"><span>色相</span><input id="ceH" type="range" min="0" max="360" step="1" /></label>
+              <label class="ce-slider"><span>彩度</span><input id="ceS" type="range" min="0" max="100" step="1" /></label>
+              <label class="ce-slider"><span>明るさ</span><input id="ceL" type="range" min="0" max="100" step="1" /></label>
+            </div>
+            <div class="subhead">最近使った色</div>
+            <div class="swatches history" id="colorHistory"></div>
+          </div>
         </details>
 
         <details open data-tab="save">
