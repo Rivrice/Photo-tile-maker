@@ -10,7 +10,8 @@ import { allLayouts, getCustom, getLayout, layoutToCells, pointInTile } from './
 import { initCustomEditor } from './custom';
 import { ACCEPT, MAX_PHOTOS, extractRegion, loadPhoto, makeSamples } from './photos';
 import { IS_IOS, LOW_CONF, canvasToBlob, cropFor, drawScene, effectiveComp, photoBox, type Crop } from './render';
-import { IS_NATIVE, nativeSave, nativeShare, onBackButton } from './native';
+import { IS_NATIVE, nativeSave, nativeShare, onBackButton, openInExifFrame } from './native';
+import { commonMeta, withExif } from './exifwrite';
 import type { CompType, OverlayMode, PhotoItem, Settings, Tile } from './types';
 
 // ---------- 設定 ----------
@@ -93,19 +94,19 @@ function canvasDims(aspect: string) {
   return r >= 1 ? { W: 1000, H: 1000 / r } : { W: 1000 * r, H: 1000 };
 }
 
-function computeTiles(items: PhotoItem[] = list()): Tile[] {
-  const def = getLayout(settings.layout);
-  dims = canvasDims(settings.aspect);
+function computeTiles(items: PhotoItem[] = list(), st: Settings = settings): Tile[] {
+  const def = getLayout(st.layout);
+  dims = canvasDims(st.aspect);
   if (!items.length) return [];
   return def.build({
     W: dims.W,
     H: dims.H,
     aspects: items.map((p) => p.width / p.height),
-    gap: settings.gap,
-    margin: settings.margin,
-    columns: def.usesColumns ? settings.columns : 0,
-    seed: settings.seed,
-    slant: def.slantable ? settings.slant : 0,
+    gap: st.gap,
+    margin: st.margin,
+    columns: def.usesColumns ? st.columns : 0,
+    seed: st.seed,
+    slant: def.slantable ? st.slant : 0,
   });
 }
 
@@ -1821,9 +1822,15 @@ function fileName() {
   return `photo-tile-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.${ext}`;
 }
 
-async function exportImage(): Promise<Blob> {
+/**
+ * 画像を書き出す。JPEG には、すべての写真で共通する Exif（カメラ・レンズなど）だけを書き込む。
+ * frameless: 外側の余白（枠）なしで書き出す（Exif Frame Maker に渡すとき）
+ */
+async function exportImage(o: { frameless?: boolean; format?: string; quality?: number } = {}): Promise<Blob> {
   const items = list();
-  const ts = computeTiles(items);
+  const st: Settings = o.frameless ? { ...settings, margin: 0 } : settings;
+  const format = o.format ?? settings.format;
+  const ts = computeTiles(items, st);
   const k = settings.outEdge / 1000;
   const out = document.createElement('canvas');
   out.width = Math.round(dims.W * k);
@@ -1849,7 +1856,7 @@ async function exportImage(): Promise<Blob> {
     k,
     tiles: ts,
     photos: items,
-    settings,
+    settings: st,
     rounded: !!getLayout(settings.layout).rounded,
     image: (t) => {
       const c = cache.get(t)!;
@@ -1857,9 +1864,11 @@ async function exportImage(): Promise<Blob> {
     },
   });
   for (const c of cache.values()) c.width = 0;
-  const blob = await canvasToBlob(out, settings.format, settings.quality);
+  const blob = await canvasToBlob(out, format, o.quality ?? settings.quality);
   out.width = 0;
-  return blob;
+  if (format !== 'image/jpeg') return blob;
+  const real = items.filter((p) => p.file);
+  return withExif(blob, commonMeta(real.map((p) => p.meta ?? {})));
 }
 
 function download(blob: Blob, name: string) {
@@ -1930,6 +1939,63 @@ $('#shareDl').addEventListener('click', async () => {
     toast('保存できませんでした。「保存・共有」からお試しください', 5000);
   }
 });
+// ---------- Exif Frame Maker に転送 ----------
+
+const EFM_URL = import.meta.env.VITE_EFM_URL || 'https://rivrice.github.io/exif-frame-maker/';
+const EFM_ORIGIN = new URL(EFM_URL).origin;
+
+$('#toEfm').addEventListener('click', async () => {
+  if (usingSamples()) return toast('写真を追加してから転送してください');
+  const btn = $<HTMLButtonElement>('#toEfm');
+  // ブラウザ版：ポップアップとして扱われないよう、押した直後に新しいタブを開いておく
+  let win: Window | null = null;
+  let ready = false;
+  let onMsg: ((e: MessageEvent) => void) | null = null;
+  if (!IS_NATIVE) {
+    onMsg = (e: MessageEvent) => {
+      if (e.origin !== EFM_ORIGIN || e.source !== win) return;
+      if (e.data?.type === 'efm-ready') ready = true;
+      if (e.data?.type === 'efm-received') {
+        window.removeEventListener('message', onMsg!);
+        toast('Exif Frame Maker に転送しました');
+      }
+    };
+    window.addEventListener('message', onMsg);
+    win = window.open(`${EFM_URL}?from=photo-tile-maker`, '_blank');
+    if (!win) {
+      window.removeEventListener('message', onMsg);
+      return toast('新しいタブを開けませんでした。ポップアップを許可してから、もう一度お試しください', 5000);
+    }
+  }
+  btn.disabled = true;
+  const busy = $('#busy');
+  busy.hidden = false;
+  busy.textContent = '書き出し中…';
+  try {
+    const blob = await exportImage({ frameless: true, format: 'image/jpeg', quality: Math.max(0.92, settings.quality) });
+    const name = fileName().replace(/\.\w+$/, '.jpg');
+    const file = new File([blob], name, { type: 'image/jpeg' });
+    $('#progress').textContent = '';
+    if (IS_NATIVE) {
+      const r = await openInExifFrame(file);
+      if (!r.opened) toast('Exif Frame Maker アプリが見つかりません。ダウンロードページを開きます', 5000);
+      return;
+    }
+    // 開いたタブの準備ができたら渡す（最大 60 秒待つ）
+    const t0 = Date.now();
+    while (!ready && !win!.closed && Date.now() - t0 < 60000) await new Promise((r) => setTimeout(r, 150));
+    if (!ready) throw new Error('Exif Frame Maker が応答しませんでした');
+    win!.postMessage({ type: 'efm-image', file }, EFM_ORIGIN);
+  } catch (err) {
+    console.error(err);
+    if (onMsg) window.removeEventListener('message', onMsg);
+    toast('転送できませんでした。「画像を保存」してから Exif Frame Maker で開いてください', 5000);
+  } finally {
+    btn.disabled = false;
+    busy.hidden = true;
+  }
+});
+
 if (IS_NATIVE) {
   document.body.classList.add('native');
   $('#shareBtn').textContent = '保存・共有（ギャラリー / Googleフォトなど）';

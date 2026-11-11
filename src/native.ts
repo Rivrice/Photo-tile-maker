@@ -74,3 +74,17 @@ export async function nativeSave(files: File[]): Promise<string> {
   }
   return 'Documents/PhotoTileMaker';
 }
+
+interface ExifFrameLauncherPlugin {
+  open(opts: { data: string; name: string }): Promise<{ opened: boolean }>;
+}
+// android/app/src/main/java/.../ExifFrameLauncherPlugin.java
+const ExifFrameLauncher = registerPlugin<ExifFrameLauncherPlugin>('ExifFrameLauncher');
+
+/**
+ * Exif Frame Maker アプリで画像を開く。
+ * アプリが入っていなければ、ダウンロードページを開いて opened: false を返す
+ */
+export async function openInExifFrame(file: File): Promise<{ opened: boolean }> {
+  return ExifFrameLauncher.open({ data: await toBase64(file), name: file.name });
+}

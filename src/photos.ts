@@ -1,5 +1,6 @@
 // 写真の読み込みと縮小。元ファイルは保持し、必要になった解像度だけを取り出す。
 import exifr from 'exifr';
+import { META_TAGS, normalizeMeta, type Meta } from './exifwrite';
 import { analyze } from './analyze';
 import { heicToJpegNative } from './native';
 import type { PhotoItem } from './types';
@@ -136,17 +137,30 @@ function finishItem(name: string, file: File | null, full: Drawable, date: numbe
   };
 }
 
+/** Exif の日時（"2024:05:01 12:34:56"）をミリ秒に */
+function exifDate(v: unknown): number | null {
+  if (v instanceof Date) return isNaN(v.getTime()) ? null : v.getTime();
+  if (typeof v !== 'string') return null;
+  const m = /^(\d{4})[:-](\d{2})[:-](\d{2})[ T](\d{2}):(\d{2}):?(\d{2})?/.exec(v.trim());
+  if (!m) return null;
+  const t = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0)).getTime();
+  return isNaN(t) ? null : t;
+}
+
 export async function loadPhoto(file: File): Promise<PhotoItem> {
   let date = file.lastModified;
+  let meta: Meta = {};
   try {
-    const ex = await exifr.parse(file, ['DateTimeOriginal', 'CreateDate']);
-    const d = ex?.DateTimeOriginal ?? ex?.CreateDate;
-    if (d instanceof Date && !isNaN(d.getTime())) date = d.getTime();
+    const ex = await exifr.parse(file, { pick: ['DateTimeOriginal', 'CreateDate', ...META_TAGS], reviveValues: false, translateValues: false });
+    const d = exifDate(ex?.DateTimeOriginal ?? ex?.CreateDate);
+    if (d) date = d;
+    meta = normalizeMeta(ex);
   } catch {
     /* Exif なし */
   }
   const full = await decode(file);
   const item = finishItem(file.name, file, full, date);
+  item.meta = meta;
   if (item.preview !== full) release(full);
   return item;
 }
