@@ -815,24 +815,47 @@ export function initCustomEditor(deps: EditorDeps) {
     return out;
   }
 
+  /**
+   * 枠の辺の上にあって、枠の角のすぐ近くにある頂点を角にそろえる。
+   * 図形の辺が角の少し手前で枠を横切ると、角に細いとげが残ってしまうため。
+   * そろえた結果つぶれたマスは null
+   */
+  function tidyCorner(poly: Pt[]): Pt[] | null {
+    const f = frame();
+    const unit = Math.min(f.iw, f.ih);
+    const near = unit * 0.06, on = unit * 0.002;
+    const pts = poly.map((p) => {
+      const atX = Math.abs(p.x) < on || Math.abs(p.x - f.iw) < on;
+      const atY = Math.abs(p.y) < on || Math.abs(p.y - f.ih) < on;
+      if (!atX && !atY) return p;
+      const cx = p.x < f.iw / 2 ? 0 : f.iw, cy = p.y < f.ih / 2 ? 0 : f.ih;
+      return Math.hypot(p.x - cx, p.y - cy) < near ? { x: cx, y: cy } : p;
+    });
+    // 同じ位置に重なった頂点をまとめる
+    const out = pts.filter((p, i) => {
+      const q = pts[(i + 1) % pts.length];
+      return Math.hypot(p.x - q.x, p.y - q.y) > 1e-6;
+    });
+    return out.length >= 3 && Math.abs(area(out)) > unit * unit * 1e-4 ? out : null;
+  }
+
   /** 図形で区切る：囲んだ範囲を1つのマスにし、重なっていたマスからはその部分を取り除く */
   function carveShape(shape: Pt[]): string | null {
     const f = frame();
     const unit = Math.min(f.iw, f.ih);
     const o = { minIn: unit * 0.01, minArea: f.iw * f.ih * 0.004, minThick: unit * 0.035 };
-    // 枠の辺に近い（または重なる）頂点は、枠の少し外へ出す。
-    // 辺どうしが重なると交点が決まらず区切れないのと、枠との間に細い帯が残るのを防ぐ
+    // 枠の辺に近い頂点は、枠の辺ちょうどにそろえる（枠の角の近くなら角に）。
+    // 枠との間に細い帯や、角に小さなかけらが残らないようにするため
     const near = o.minThick * 1.2, out0 = unit * 0.0005;
-    const c0 = centroid(shape);
-    const grown = shape.map((v) => {
-      // ほかのマスの辺と重なったときのために、図形全体をほんの少しだけ大きくする
+    const snapped = shape.map((v) => ({
+      x: v.x > 0 && v.x < near ? 0 : v.x < f.iw && v.x > f.iw - near ? f.iw : v.x,
+      y: v.y > 0 && v.y < near ? 0 : v.y < f.ih && v.y > f.ih - near ? f.ih : v.y,
+    }));
+    // 辺どうしがぴったり重なると交点が決まらず区切れないので、図形全体をほんの少しだけ大きくする
+    const c0 = centroid(snapped);
+    const grown = snapped.map((v) => {
       const d = Math.hypot(v.x - c0.x, v.y - c0.y) || 1;
-      const g = { x: v.x + ((v.x - c0.x) / d) * out0, y: v.y + ((v.y - c0.y) / d) * out0 };
-      if (g.x < near) g.x = Math.min(g.x, -out0);
-      if (g.x > f.iw - near) g.x = Math.max(g.x, f.iw + out0);
-      if (g.y < near) g.y = Math.min(g.y, -out0);
-      if (g.y > f.ih - near) g.y = Math.max(g.y, f.ih + out0);
-      return g;
+      return { x: v.x + ((v.x - c0.x) / d) * out0, y: v.y + ((v.y - c0.y) / d) * out0 };
     });
     const S = clipToFrame(grown);
     if (S.length < 3 || Math.abs(area(S)) < f.iw * f.ih * 0.004) return '図形が小さすぎます';
@@ -842,10 +865,20 @@ export function initCustomEditor(deps: EditorDeps) {
       const r = carveCell(c.map(toPx), grown, o);
       if (!r) return '細すぎるマスができるので区切れません。少し位置か大きさを変えてください';
       const same = r.length === 1 && r[0].length === c.length;
-      out.push(...r.map((p) => p.map(fromPx)));
-      outR.push(...r.map(() => (same ? rots[ci] || 0 : 0)));
+      if (same) {
+        out.push(c.slice());
+        outR.push(rots[ci] || 0);
+        continue;
+      }
+      for (const pc of r) {
+        const t = tidyCorner(pc);
+        if (t) {
+          out.push(t.map(fromPx));
+          outR.push(0);
+        }
+      }
     }
-    out.push(S.map(fromPx));
+    out.push((tidyCorner(S) ?? S).map(fromPx));
     outR.push(0);
     if (out.length > deps.maxCells) return `マスは最大${deps.maxCells}個までです`;
     cells = out;

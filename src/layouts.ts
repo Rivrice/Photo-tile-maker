@@ -611,8 +611,10 @@ export function cellsToTiles(cells: Pt[][], inp: Pick<LayoutInput, 'W' | 'H' | '
   const iw = W - ox * 2, ih = H - oy * 2;
   return cells.map((cell, i) => {
     const poly = cell.map((p) => ({ x: ox + p.x * iw, y: oy + p.y * ih }));
-    // 外枠に接する辺は余白の位置ちょうどになるよう、すき間の半分だけ縮める
-    return polyToTile(i, insetPoly(poly, gap / 2, isConvex(poly) ? Infinity : 3));
+    // 外枠に接する辺は余白の位置ちょうどになるよう、すき間の半分だけ縮める。
+    // 鋭い角は縮めたときに枠の外へはみ出すことがあるので、最後に枠で切り取る
+    const inset = insetPoly(poly, gap / 2, isConvex(poly) ? Infinity : 3);
+    return polyToTile(i, clipToRect(inset, margin, margin, W - margin, H - margin));
   });
 }
 
@@ -630,6 +632,27 @@ function fittedCells(cells: Pt[][], W: number, H: number, n: number): Pt[][] {
     m.set(key, r);
   }
   return r;
+}
+
+/** 多角形を長方形で切り取る（Sutherland–Hodgman） */
+function clipToRect(poly: Pt[], x0: number, y0: number, x1: number, y1: number): Pt[] {
+  const sides: ((p: Pt) => number)[] = [(p) => p.x - x0, (p) => x1 - p.x, (p) => p.y - y0, (p) => y1 - p.y];
+  let out = poly;
+  for (const f of sides) {
+    const inp = out;
+    out = [];
+    for (let i = 0; i < inp.length; i++) {
+      const a = inp[i], b = inp[(i + 1) % inp.length];
+      const da = f(a), db = f(b);
+      if (da >= 0) out.push(a);
+      if (da >= 0 !== db >= 0) {
+        const t = da / (da - db);
+        out.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+      }
+    }
+    if (out.length < 3) return poly;
+  }
+  return out;
 }
 
 /** 凸多角形かどうか */
