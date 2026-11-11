@@ -2,6 +2,7 @@
 // ペイントソフトのように、マスを置いたり、なぞって区切ったり（ダイレクトレイアウト）できる。
 import { cellsToTiles, deleteCustom, getCustom, saveCustom } from './layouts';
 import { drawScene } from './render';
+import { area, bbox, centroid, cutPoly, inside, labelPoint, pathLen, thickness, type CutOpts } from './geom';
 import type { PhotoItem, Pt, Settings } from './types';
 
 type Tool = 'select' | 'knife' | 'rect' | 'circle' | 'tri' | 'hex';
@@ -55,203 +56,6 @@ const HINTS: Record<Tool, string> = {
 };
 
 // ---------- 幾何 ----------
-
-function area(poly: Pt[]) {
-  let a = 0;
-  for (let i = 0; i < poly.length; i++) {
-    const p = poly[i], q = poly[(i + 1) % poly.length];
-    a += p.x * q.y - q.x * p.y;
-  }
-  return a / 2;
-}
-/** 面積の重心（曲線で区切ったマスのように、点が片側に偏っていてもずれない） */
-function centroid(poly: Pt[]): Pt {
-  let a = 0, x = 0, y = 0;
-  for (let i = 0; i < poly.length; i++) {
-    const p = poly[i], q = poly[(i + 1) % poly.length];
-    const k = p.x * q.y - q.x * p.y;
-    a += k;
-    x += (p.x + q.x) * k;
-    y += (p.y + q.y) * k;
-  }
-  if (Math.abs(a) < 1e-12) {
-    let sx = 0, sy = 0;
-    for (const p of poly) {
-      sx += p.x;
-      sy += p.y;
-    }
-    return { x: sx / poly.length, y: sy / poly.length };
-  }
-  return { x: x / (3 * a), y: y / (3 * a) };
-}
-function distToEdges(poly: Pt[], x: number, y: number) {
-  let d = Infinity;
-  for (let i = 0; i < poly.length; i++) {
-    const a = poly[i], b = poly[(i + 1) % poly.length];
-    const vx = b.x - a.x, vy = b.y - a.y;
-    const t = Math.max(0, Math.min(1, ((x - a.x) * vx + (y - a.y) * vy) / (vx * vx + vy * vy || 1)));
-    d = Math.min(d, Math.hypot(a.x + vx * t - x, a.y + vy * t - y));
-  }
-  return d;
-}
-/** 番号を置く点：マスの内側で、なるべく縁から離れたところ */
-function labelPoint(poly: Pt[]): Pt {
-  const c = centroid(poly);
-  const b = bbox(poly);
-  const r = Math.min(b.x1 - b.x0, b.y1 - b.y0);
-  if (inside(poly, c.x, c.y) && distToEdges(poly, c.x, c.y) > r * 0.3) return c;
-  let best = c, bd = inside(poly, c.x, c.y) ? distToEdges(poly, c.x, c.y) : -1;
-  const N = 14;
-  for (let i = 0; i <= N; i++)
-    for (let j = 0; j <= N; j++) {
-      const x = b.x0 + ((b.x1 - b.x0) * i) / N, y = b.y0 + ((b.y1 - b.y0) * j) / N;
-      if (!inside(poly, x, y)) continue;
-      const d = distToEdges(poly, x, y);
-      if (d > bd) {
-        bd = d;
-        best = { x, y };
-      }
-    }
-  return best;
-}
-/** かけらの太さの目安（2×面積÷周長。幅 w の細長い帯なら、ほぼ w） */
-function thickness(poly: Pt[]) {
-  let per = 0;
-  for (let i = 0; i < poly.length; i++) {
-    const a = poly[i], b = poly[(i + 1) % poly.length];
-    per += Math.hypot(b.x - a.x, b.y - a.y);
-  }
-  return per ? (2 * Math.abs(area(poly))) / per : 0;
-}
-function bbox(poly: Pt[]) {
-  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-  for (const p of poly) {
-    x0 = Math.min(x0, p.x);
-    y0 = Math.min(y0, p.y);
-    x1 = Math.max(x1, p.x);
-    y1 = Math.max(y1, p.y);
-  }
-  return { x0, y0, x1, y1 };
-}
-function inside(poly: Pt[], x: number, y: number) {
-  let r = false;
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-    const a = poly[i], b = poly[j];
-    if (a.y > y !== b.y > y && x < ((b.x - a.x) * (y - a.y)) / (b.y - a.y) + a.x) r = !r;
-  }
-  return r;
-}
-interface Cross {
-  /** 線（折れ線）に沿った距離 */
-  s: number;
-  /** 多角形の外周上の位置（辺の番号 + 辺の中の割合） */
-  pos: number;
-  p: Pt;
-}
-/** 折れ線と多角形の外周の交点を、線に沿った順に並べる */
-function crossings(poly: Pt[], path: Pt[]): Cross[] {
-  const out: Cross[] = [];
-  let acc = 0;
-  const n = poly.length;
-  for (let k = 0; k + 1 < path.length; k++) {
-    const a = path[k], b = path[k + 1];
-    const dx = b.x - a.x, dy = b.y - a.y;
-    const segL = Math.hypot(dx, dy);
-    for (let i = 0; i < n; i++) {
-      const c = poly[i], d = poly[(i + 1) % n];
-      const ex = d.x - c.x, ey = d.y - c.y;
-      const den = dx * ey - dy * ex;
-      if (Math.abs(den) < 1e-12) continue;
-      const t = ((c.x - a.x) * ey - (c.y - a.y) * ex) / den;
-      const u = ((c.x - a.x) * dy - (c.y - a.y) * dx) / den;
-      if (t < 0 || t >= 1 || u < 0 || u >= 1) continue;
-      out.push({ s: acc + t * segL, pos: i + u, p: { x: a.x + dx * t, y: a.y + dy * t } });
-    }
-    acc += segL;
-  }
-  return out.sort((x, y) => x.s - y.s);
-}
-/** 外周を位置 a から b まで進むときに通る頂点 */
-function walk(poly: Pt[], a: number, b: number): Pt[] {
-  const n = poly.length;
-  const end = b < a ? b + n : b;
-  const out: Pt[] = [];
-  for (let k = Math.floor(a) + 1; k <= end; k++) out.push(poly[k % n]);
-  return out;
-}
-/** 折れ線上の距離 s の点 */
-function pointAt(path: Pt[], s: number): Pt {
-  let acc = 0;
-  for (let k = 0; k + 1 < path.length; k++) {
-    const a = path[k], b = path[k + 1];
-    const l = Math.hypot(b.x - a.x, b.y - a.y);
-    if (acc + l >= s) {
-      const t = l ? (s - acc) / l : 0;
-      return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
-    }
-    acc += l;
-  }
-  return path[path.length - 1];
-}
-/** 折れ線の s1〜s2 の部分 */
-function subPath(path: Pt[], s1: number, s2: number): Pt[] {
-  const out = [pointAt(path, s1)];
-  let acc = 0;
-  for (let k = 0; k + 1 < path.length; k++) {
-    acc += Math.hypot(path[k + 1].x - path[k].x, path[k + 1].y - path[k].y);
-    if (acc > s1 && acc < s2) out.push(path[k + 1]);
-  }
-  out.push(pointAt(path, s2));
-  return out;
-}
-
-interface CutOpts {
-  /** なぞった線そのもの（延長部分を除く）の範囲 */
-  from: number;
-  to: number;
-  /** マスの中を通る長さがこれ未満なら切らない */
-  minIn: number;
-  /** これより小さいかけらができるなら切らない */
-  minArea: number;
-  /** これより細いかけらができるなら切らない（端ぎりぎりを切ったときの細い帯） */
-  minThick: number;
-  /** 細すぎて切らなかったとき */
-  onThin?: () => void;
-}
-/**
- * 多角形（凹でも可）を、線に沿って切る。線がマスを何度も横切るときは、続きの線でさらに切る。
- * 結果のかけらを返す（切れなければ元のまま）。
- */
-function cutPoly(poly: Pt[], path: Pt[], o: CutOpts, depth = 0): Pt[][] {
-  if (depth > 6) return [poly];
-  const cs = crossings(poly, path);
-  for (let j = 0; j + 1 < cs.length; j++) {
-    const c1 = cs[j], c2 = cs[j + 1];
-    if (c2.s - c1.s < 1e-6) continue;
-    const mid = pointAt(path, (c1.s + c2.s) / 2);
-    if (!inside(poly, mid.x, mid.y)) continue;
-    // なぞった部分がマスの中を十分に通っているか
-    const own = Math.min(c2.s, o.to) - Math.max(c1.s, o.from);
-    if (own < o.minIn) continue;
-    const sub = subPath(path, c1.s, c2.s);
-    const A = [...sub, ...walk(poly, c2.pos, c1.pos)];
-    const B = [...sub.slice().reverse(), ...walk(poly, c1.pos, c2.pos)];
-    if (Math.abs(area(A)) < o.minArea || Math.abs(area(B)) < o.minArea) {
-      o.onThin?.();
-      continue;
-    }
-    if (thickness(A) < o.minThick || thickness(B) < o.minThick) {
-      o.onThin?.();
-      continue;
-    }
-    // 線の続きで、できたかけらをさらに切る
-    const rest = { ...o, from: Math.max(o.from, c2.s) - c2.s, to: o.to - c2.s };
-    const tail = subPath(path, c2.s, pathLen(path));
-    if (rest.to - Math.max(0, rest.from) < o.minIn || tail.length < 2) return [A, B];
-    return [...cutPoly(A, tail, rest, depth + 1), ...cutPoly(B, tail, rest, depth + 1)];
-  }
-  return [poly];
-}
 /** 線を滑らかにする（移動平均）。amount 0..1 */
 function smooth(pts: Pt[], amount: number): Pt[] {
   const w = Math.round(amount * 10);
@@ -295,11 +99,6 @@ function simplify(pts: Pt[], eps: number): Pt[] {
   }
   if (far <= eps) return [a, b];
   return [...simplify(pts.slice(0, idx + 1), eps).slice(0, -1), ...simplify(pts.slice(idx), eps)];
-}
-function pathLen(pts: Pt[]) {
-  let l = 0;
-  for (let i = 1; i < pts.length; i++) l += Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
-  return l;
 }
 /** 折れ線上に、一定間隔で点を取る */
 function resample(pts: Pt[], step: number): Pt[] {
@@ -494,7 +293,9 @@ export function initCustomEditor(deps: EditorDeps) {
     for (const id of ['#edDup', '#edRot', '#edDel']) q<HTMLButtonElement>(id).disabled = sel < 0;
     const n = deps.photos().length;
     q('#edCount').textContent = `マス ${cells.length} ／ 写真 ${n}枚`;
-    q('#edCount').classList.toggle('warn', cells.length < n);
+    q('#edCount').classList.toggle('warn', cells.length !== n);
+    q('#edCount').title =
+      cells.length < n ? '写真が多い分は、大きいマスから自動で分けて並べます' : cells.length > n ? '写真が足りない分は、小さいマスをとなりとまとめて表示します' : '';
     draw();
   }
 
@@ -991,30 +792,54 @@ export function initCustomEditor(deps: EditorDeps) {
     }
     // 図形の輪郭を、マスの外の点から1周する線にして切る
     const loop = [...S.slice(k), ...S.slice(0, k), S[k]];
-    const pieces = cutPoly(P, loop, { ...o, from: 0, to: pathLen(loop) });
+    // かけらの細さは、図形の外に残るものだけで判断する（内側は捨てるので細くてもよい）
+    const pieces = cutPoly(P, loop, { ...o, minIn: 0, minArea: 0, minThick: 0, onThin: undefined, from: 0, to: pathLen(loop) });
     if (pieces.length < 2) {
       // 切れなかった：重なっていなければそのまま、重なっていれば区切れない
       const overlap = sIn.some(Boolean) || pIn.some(Boolean);
       return overlap ? null : [P];
     }
     // 図形の内側のかけらは捨てる（図形そのものを1つのマスにする）
-    return pieces.filter((pc) => {
+    const rest = pieces.filter((pc) => {
       const lp = labelPoint(pc);
       return !inside(S, lp.x, lp.y);
     });
+    const out: Pt[][] = [];
+    for (const pc of rest) {
+      const a = Math.abs(area(pc)), th = thickness(pc);
+      // 計算誤差でできた、目に見えないかけらは黙って捨てる
+      if (th < o.minThick * 0.06 || a < o.minArea * 0.02) continue;
+      if (th < o.minThick || a < o.minArea) return null;
+      out.push(pc);
+    }
+    return out;
   }
 
   /** 図形で区切る：囲んだ範囲を1つのマスにし、重なっていたマスからはその部分を取り除く */
   function carveShape(shape: Pt[]): string | null {
     const f = frame();
     const unit = Math.min(f.iw, f.ih);
-    const S = clipToFrame(shape);
-    if (S.length < 3 || Math.abs(area(S)) < f.iw * f.ih * 0.004) return '図形が小さすぎます';
     const o = { minIn: unit * 0.01, minArea: f.iw * f.ih * 0.004, minThick: unit * 0.035 };
+    // 枠の辺に近い（または重なる）頂点は、枠の少し外へ出す。
+    // 辺どうしが重なると交点が決まらず区切れないのと、枠との間に細い帯が残るのを防ぐ
+    const near = o.minThick * 1.2, out0 = unit * 0.0005;
+    const c0 = centroid(shape);
+    const grown = shape.map((v) => {
+      // ほかのマスの辺と重なったときのために、図形全体をほんの少しだけ大きくする
+      const d = Math.hypot(v.x - c0.x, v.y - c0.y) || 1;
+      const g = { x: v.x + ((v.x - c0.x) / d) * out0, y: v.y + ((v.y - c0.y) / d) * out0 };
+      if (g.x < near) g.x = Math.min(g.x, -out0);
+      if (g.x > f.iw - near) g.x = Math.max(g.x, f.iw + out0);
+      if (g.y < near) g.y = Math.min(g.y, -out0);
+      if (g.y > f.ih - near) g.y = Math.max(g.y, f.ih + out0);
+      return g;
+    });
+    const S = clipToFrame(grown);
+    if (S.length < 3 || Math.abs(area(S)) < f.iw * f.ih * 0.004) return '図形が小さすぎます';
     const out: Pt[][] = [];
     const outR: number[] = [];
     for (const [ci, c] of cells.entries()) {
-      const r = carveCell(c.map(toPx), S, o);
+      const r = carveCell(c.map(toPx), grown, o);
       if (!r) return '細すぎるマスができるので区切れません。少し位置か大きさを変えてください';
       const same = r.length === 1 && r[0].length === c.length;
       out.push(...r.map((p) => p.map(fromPx)));
@@ -1336,7 +1161,9 @@ export function initCustomEditor(deps: EditorDeps) {
     saveCustom({ id, name, cells: cells.map((c) => c.map((p) => ({ x: +p.x.toFixed(5), y: +p.y.toFixed(5) }))) });
     close();
     deps.onSaved(`custom:${id}`);
-    deps.toast(`「${name}」を保存しました`);
+    const n = deps.photos().length;
+    const fit = n > cells.length ? '。写真が多い分は、マスを自動で分けて並べます' : n && n < cells.length ? '。写真が足りない分は、マスを自動でまとめます' : '';
+    deps.toast(`「${name}」を保存しました${fit}`);
   });
   q('#edRemove').addEventListener('click', () => {
     if (!editingId || !confirm('このレイアウトを削除しますか？')) return;

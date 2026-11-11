@@ -1,4 +1,5 @@
 // 自動レイアウト。各レイアウトは「写真の縦横比の配列」から、キャンバス上のタイル（凸多角形）を作る。
+import { fitCells } from './geom';
 import type { Pt, Tile } from './types';
 
 export interface LayoutInput {
@@ -603,8 +604,9 @@ export function deleteCustom(id: string) {
 }
 
 /** マス（0..1）を、余白とすき間を付けたタイルにする */
-export function cellsToTiles(cells: Pt[][], inp: Pick<LayoutInput, 'W' | 'H' | 'gap' | 'margin'>): Tile[] {
+export function cellsToTiles(cells: Pt[][], inp: Pick<LayoutInput, 'W' | 'H' | 'gap' | 'margin'>, count?: number): Tile[] {
   const { W, H, gap, margin } = inp;
+  if (count) cells = fittedCells(cells, W, H, count);
   const ox = margin - gap / 2, oy = margin - gap / 2;
   const iw = W - ox * 2, ih = H - oy * 2;
   return cells.map((cell, i) => {
@@ -612,6 +614,22 @@ export function cellsToTiles(cells: Pt[][], inp: Pick<LayoutInput, 'W' | 'H' | '
     // 外枠に接する辺は余白の位置ちょうどになるよう、すき間の半分だけ縮める
     return polyToTile(i, insetPoly(poly, gap / 2, isConvex(poly) ? Infinity : 3));
   });
+}
+
+const fitCache = new WeakMap<Pt[][], Map<string, Pt[][]>>();
+/** 写真の枚数に合わせて、マスを分けたりまとめたりする（結果は覚えておく） */
+function fittedCells(cells: Pt[][], W: number, H: number, n: number): Pt[][] {
+  if (n === cells.length || !cells.length) return cells;
+  let m = fitCache.get(cells);
+  if (!m) fitCache.set(cells, (m = new Map()));
+  const key = `${Math.round((W / H) * 1000)}|${n}`;
+  let r = m.get(key);
+  if (!r) {
+    const px = cells.map((c) => c.map((p) => ({ x: p.x * 1000, y: (p.y * 1000 * H) / W })));
+    r = fitCells(px, n).map((c) => c.map((p) => ({ x: p.x / 1000, y: (p.y * W) / (1000 * H) })));
+    m.set(key, r);
+  }
+  return r;
 }
 
 /** 凸多角形かどうか */
@@ -629,7 +647,7 @@ function isConvex(poly: Pt[]) {
 }
 
 export function customDef(c: CustomLayout): LayoutDef {
-  return { id: `custom:${c.id}`, name: c.name, rounded: true, build: (inp) => cellsToTiles(c.cells, inp) };
+  return { id: `custom:${c.id}`, name: c.name, rounded: true, build: (inp) => cellsToTiles(c.cells, inp, inp.aspects.length) };
 }
 
 /** 既定のレイアウトと自作のレイアウト */
