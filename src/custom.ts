@@ -48,10 +48,10 @@ const TOOLS: { id: Tool; name: string }[] = [
 const HINTS: Record<Tool, string> = {
   select: 'マスをタップして選び、ドラッグで移動。右下の丸で大きさ、上の丸で角度を変えます。',
   knife: 'なぞった線でマスを区切ります。直線はまっすぐ、曲線はなぞった形のまま区切ります。',
-  rect: 'ドラッグした範囲をこの形で区切ります（タップで標準の大きさ）。囲んだ部分が1つのマスになります。',
-  circle: 'ドラッグした範囲をこの形で区切ります（タップで標準の大きさ）。囲んだ部分が1つのマスになります。',
-  tri: 'ドラッグした範囲をこの形で区切ります（タップで標準の大きさ）。囲んだ部分が1つのマスになります。',
-  hex: 'ドラッグした範囲をこの形で区切ります（タップで標準の大きさ）。囲んだ部分が1つのマスになります。',
+  rect: 'ドラッグした範囲をこの形で区切ります（タップで標準の大きさ）。描いたあとに位置・大きさ・角度を調整して ✓ で確定します。',
+  circle: 'ドラッグした範囲をこの形で区切ります（タップで標準の大きさ）。描いたあとに位置・大きさ・角度を調整して ✓ で確定します。',
+  tri: 'ドラッグした範囲をこの形で区切ります（タップで標準の大きさ）。描いたあとに位置・大きさ・角度を調整して ✓ で確定します。',
+  hex: 'ドラッグした範囲をこの形で区切ります（タップで標準の大きさ）。描いたあとに位置・大きさ・角度を調整して ✓ で確定します。',
 };
 
 // ---------- 幾何 ----------
@@ -391,6 +391,21 @@ export function initCustomEditor(deps: EditorDeps) {
   let sel = -1;
   /** 縦横比ロック（置くとき・大きさを変えるとき） */
   let lockAspect = true;
+  /** 確定前の図形（位置・大きさ・角度を調整中）。区切った結果はその場で表示する */
+  interface Pending {
+    kind: ShapeKind;
+    c: Pt;
+    w: number;
+    h: number;
+    a: number;
+    before: string;
+    base: Pt[][];
+    baseR: number[];
+    err: string | null;
+  }
+  let pending: Pending | null = null;
+  /** マグネットのガイド線（縦横比をそろえた座標） */
+  let guides: { x: number[]; y: number[] } = { x: [], y: [] };
   let tool: Tool = 'knife';
   /** タップで置くときの大きさ（短辺比） */
   const size = 0.2;
@@ -467,14 +482,14 @@ export function initCustomEditor(deps: EditorDeps) {
 
   function syncUI() {
     root.querySelectorAll<HTMLButtonElement>('#edTools button').forEach((b) => b.classList.toggle('active', b.dataset.tool === tool));
-    q('#edHint').textContent = HINTS[tool];
+    q('#edHint').textContent = pending ? 'ドラッグで移動、右下の丸で大きさ、上の丸で角度を調整して、✓ で確定します（✕ で取り消し）。' : HINTS[tool];
     q('#edLock').hidden = tool === 'knife';
     q('#edLock').classList.toggle('active', lockAspect);
     q('#edLock').setAttribute('aria-pressed', String(lockAspect));
     q('#edCutRow').hidden = tool !== 'knife';
     q('#edSmoothRow').hidden = cutMode !== 'curve';
     root.querySelectorAll<HTMLButtonElement>('[data-cut]').forEach((b) => b.classList.toggle('active', b.dataset.cut === cutMode));
-    q<HTMLButtonElement>('#edUndo').disabled = !past.length;
+    q<HTMLButtonElement>('#edUndo').disabled = !past.length && !pending;
     q<HTMLButtonElement>('#edRedo').disabled = !future.length;
     for (const id of ['#edDup', '#edRot', '#edDel']) q<HTMLButtonElement>(id).disabled = sel < 0;
     const n = deps.photos().length;
@@ -592,6 +607,111 @@ export function initCustomEditor(deps: EditorDeps) {
         x.fillText(`${deg}°`, tx, ty + 0.5);
       }
     }
+    // マグネットのガイド線
+    if (guides.x.length || guides.y.length) {
+      const f = frame();
+      x.save();
+      x.strokeStyle = '#2f9bff';
+      x.lineWidth = 1;
+      x.setLineDash([5, 4]);
+      for (const gx of guides.x) {
+        const a = toScreen(fromPx({ x: gx, y: 0 })), b = toScreen(fromPx({ x: gx, y: f.ih }));
+        x.beginPath();
+        x.moveTo(a.x, a.y);
+        x.lineTo(b.x, b.y);
+        x.stroke();
+      }
+      for (const gy of guides.y) {
+        const a = toScreen(fromPx({ x: 0, y: gy })), b = toScreen(fromPx({ x: f.iw, y: gy }));
+        x.beginPath();
+        x.moveTo(a.x, a.y);
+        x.lineTo(b.x, b.y);
+        x.stroke();
+      }
+      x.restore();
+    }
+    // 調整中の図形：輪郭、ハンドル、確定・取り消しボタン
+    if (pending) {
+      const col = pending.err ? '#d64535' : '#e8792b';
+      const sp = pendingPoly().map((p) => toScreen(fromPx(p)));
+      x.beginPath();
+      sp.forEach((p, j) => (j ? x.lineTo(p.x, p.y) : x.moveTo(p.x, p.y)));
+      x.closePath();
+      if (pending.err) {
+        x.fillStyle = 'rgba(214,69,53,.15)';
+        x.fill();
+      }
+      x.lineWidth = 3;
+      x.strokeStyle = 'rgba(255,255,255,.9)';
+      x.stroke();
+      x.lineWidth = 2;
+      x.strokeStyle = col;
+      x.setLineDash([6, 4]);
+      x.stroke();
+      x.setLineDash([]);
+      const H = pendingHandles();
+      x.beginPath();
+      x.moveTo(H.top.x, H.top.y);
+      x.lineTo(H.rot.x, H.rot.y);
+      x.lineWidth = 1.5;
+      x.strokeStyle = col;
+      x.stroke();
+      for (const h of [H.scale, H.rot]) {
+        x.beginPath();
+        x.arc(h.x, h.y, 9, 0, Math.PI * 2);
+        x.fillStyle = '#fff';
+        x.fill();
+        x.lineWidth = 2.5;
+        x.strokeStyle = col;
+        x.stroke();
+      }
+      x.beginPath();
+      x.arc(H.rot.x, H.rot.y, 4.5, -Math.PI * 0.2, Math.PI * 1.3);
+      x.lineWidth = 1.5;
+      x.stroke();
+      // 取り消し
+      x.beginPath();
+      x.arc(H.cancel.x, H.cancel.y, 14, 0, Math.PI * 2);
+      x.fillStyle = 'rgba(30,30,34,.85)';
+      x.fill();
+      x.strokeStyle = '#fff';
+      x.lineWidth = 2;
+      x.lineCap = 'round';
+      x.beginPath();
+      x.moveTo(H.cancel.x - 5, H.cancel.y - 5);
+      x.lineTo(H.cancel.x + 5, H.cancel.y + 5);
+      x.moveTo(H.cancel.x + 5, H.cancel.y - 5);
+      x.lineTo(H.cancel.x - 5, H.cancel.y + 5);
+      x.stroke();
+      // 確定
+      x.beginPath();
+      x.arc(H.ok.x, H.ok.y, 17, 0, Math.PI * 2);
+      x.fillStyle = pending.err ? '#9a9a9a' : '#e8792b';
+      x.fill();
+      x.strokeStyle = '#fff';
+      x.lineWidth = 2.6;
+      x.lineJoin = 'round';
+      x.beginPath();
+      x.moveTo(H.ok.x - 7, H.ok.y + 0.5);
+      x.lineTo(H.ok.x - 2, H.ok.y + 5.5);
+      x.lineTo(H.ok.x + 7.5, H.ok.y - 5);
+      x.stroke();
+      if (drag?.kind === 'prot') {
+        let deg = Math.round(((pending.a * 180) / Math.PI) % 360);
+        if (deg > 180) deg -= 360;
+        if (deg <= -180) deg += 360;
+        x.font = "700 12px Inter, 'Noto Sans JP Variable', sans-serif";
+        x.textAlign = 'center';
+        x.textBaseline = 'middle';
+        const tx = H.rot.x, ty = H.rot.y - 22;
+        x.fillStyle = 'rgba(20,20,22,.75)';
+        x.beginPath();
+        x.roundRect(tx - 22, ty - 10, 44, 20, 10);
+        x.fill();
+        x.fillStyle = '#fff';
+        x.fillText(`${deg}°`, tx, ty + 0.5);
+      }
+    }
     // なぞっている線
     if (stroke && stroke.length > 1 && tool === 'knife') {
       const pts = cutPath(stroke).map(toScreen);
@@ -642,16 +762,15 @@ export function initCustomEditor(deps: EditorDeps) {
     return { scale: back({ x: b.x1, y: b.y1 }), rot, top };
   }
 
-  /** ドラッグした範囲に置く図形（0..1 の多角形）。始点から今の指の位置までの四角に収める */
-  function shapeFor(path: Pt[]): Pt[] {
-    const kind = tool as ShapeKind;
+  /** ドラッグした範囲（縦横比をそろえた座標の中心・幅・高さ）。始点から今の指の位置までの四角 */
+  function shapeBox(path: Pt[]) {
     const f = frame();
     const m = Math.min(f.iw, f.ih);
     const a = toPx(path[0]), b = toPx(path[path.length - 1]);
     const unit = size * m;
     let dx = b.x - a.x, dy = b.y - a.y;
-    // タップ：標準の大きさで1つ
-    if (Math.hypot(dx, dy) < m * 0.03) return makeShape(kind, a.x, a.y, unit, unit).map(fromPx);
+    // タップ：標準の大きさ
+    if (Math.hypot(dx, dy) < m * 0.03) return { c: a, w: unit, h: unit };
     if (lockAspect) {
       const k = Math.max(Math.abs(dx), Math.abs(dy));
       dx = (dx < 0 ? -1 : 1) * k;
@@ -659,7 +778,127 @@ export function initCustomEditor(deps: EditorDeps) {
     }
     const min = m * 0.04;
     const w = Math.max(Math.abs(dx), min), h = Math.max(Math.abs(dy), min);
-    return makeShape(kind, a.x + (dx < 0 ? -w : w) / 2, a.y + (dy < 0 ? -h : h) / 2, w, h).map(fromPx);
+    return { c: { x: a.x + (dx < 0 ? -w : w) / 2, y: a.y + (dy < 0 ? -h : h) / 2 }, w, h };
+  }
+  /** ドラッグ中の図形（0..1 の多角形） */
+  function shapeFor(path: Pt[]): Pt[] {
+    const { c, w, h } = shapeBox(path);
+    return makeShape(tool as ShapeKind, c.x, c.y, w, h).map(fromPx);
+  }
+
+  // ---------- マグネット ----------
+
+  /** そろえる先の線：枠の端と中心、ほかのマスの端と中心（縦横比をそろえた座標） */
+  function snapLines(source: Pt[][], skip = -1) {
+    const f = frame();
+    const xs = [0, f.iw / 2, f.iw], ys = [0, f.ih / 2, f.ih];
+    source.forEach((c, i) => {
+      if (i === skip) return;
+      const b = bbox(c.map(toPx));
+      xs.push(b.x0, (b.x0 + b.x1) / 2, b.x1);
+      ys.push(b.y0, (b.y0 + b.y1) / 2, b.y1);
+    });
+    return { xs, ys };
+  }
+  /** 値の組 vals のどれかが線に近ければ、ずらす量と線を返す */
+  function snap1(vals: number[], lines: number[]) {
+    const thr = 9 * pxPerScreen();
+    let best: { d: number; line: number } | null = null;
+    for (const v of vals)
+      for (const l of lines) {
+        const d = l - v;
+        if (Math.abs(d) < thr && (!best || Math.abs(d) < Math.abs(best.d))) best = { d, line: l };
+      }
+    return best;
+  }
+  /** 範囲 b（端・中心）を線にそろえる。ずらす量を返し、ガイド線を出す */
+  function snapBox(b: { x0: number; y0: number; x1: number; y1: number }, L: { xs: number[]; ys: number[] }) {
+    const sx = snap1([b.x0, (b.x0 + b.x1) / 2, b.x1], L.xs);
+    const sy = snap1([b.y0, (b.y0 + b.y1) / 2, b.y1], L.ys);
+    guides = { x: sx ? [sx.line] : [], y: sy ? [sy.line] : [] };
+    return { dx: sx?.d ?? 0, dy: sy?.d ?? 0 };
+  }
+  /** 点を線にそろえる（0..1） */
+  function snapPoint(p: Pt, L: { xs: number[]; ys: number[] }): Pt {
+    const pp = toPx(p);
+    const sx = snap1([pp.x], L.xs), sy = snap1([pp.y], L.ys);
+    guides = { x: sx ? [sx.line] : [], y: sy ? [sy.line] : [] };
+    return fromPx({ x: pp.x + (sx?.d ?? 0), y: pp.y + (sy?.d ?? 0) });
+  }
+
+  // ---------- 調整中の図形 ----------
+
+  function pendingPoly(): Pt[] {
+    const p = pending!;
+    return rotAround(makeShape(p.kind, p.c.x, p.c.y, p.w, p.h), p.c, p.a);
+  }
+  /** 調整中の図形のハンドルとボタン（画面の CSS px） */
+  function pendingHandles() {
+    const p = pending!;
+    const back = (q: Pt) => toScreen(fromPx(rotAround([q], p.c, p.a)[0]));
+    const off = 30 * pxPerScreen();
+    let top = back({ x: p.c.x, y: p.c.y - p.h / 2 }), rot = back({ x: p.c.x, y: p.c.y - p.h / 2 - off });
+    if (rot.y < 10 || rot.x < 10 || rot.x > view.cw - 10 || rot.y > view.ch - 10) {
+      top = back({ x: p.c.x, y: p.c.y + p.h / 2 });
+      rot = back({ x: p.c.x, y: p.c.y + p.h / 2 + off });
+    }
+    const scale = back({ x: p.c.x + p.w / 2, y: p.c.y + p.h / 2 });
+    // ✓ と ✕ は図形の右横（入らなければ左横、それも無理なら下）に縦に並べる。角度・大きさのハンドルとは重ねない
+    const sb = bbox(pendingPoly().map((q) => toScreen(fromPx(q))));
+    const cl = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+    let ok: Pt, cancel: Pt;
+    if (sb.x1 + 26 <= view.cw - 18 || sb.x0 - 26 >= 18) {
+      const x = sb.x1 + 26 <= view.cw - 18 ? sb.x1 + 26 : sb.x0 - 26;
+      const y = cl(sb.y0 + 18, 20, view.ch - 60);
+      ok = { x, y };
+      cancel = { x, y: y + 42 };
+    } else {
+      const y = sb.y1 + 26 <= view.ch - 18 ? sb.y1 + 26 : cl(sb.y0 - 26, 18, view.ch - 18);
+      const x = cl((sb.x0 + sb.x1) / 2 + 40, 60, view.cw - 20);
+      ok = { x, y };
+      cancel = { x: x - 42, y };
+    }
+    return { top, rot, scale, ok, cancel };
+  }
+  /** 調整中の図形で、元のマスを区切り直す（その場で結果を表示） */
+  function applyPending() {
+    const p = pending!;
+    cells = p.base.map((c) => c.slice());
+    rots = p.baseR.slice();
+    p.err = carveShape(pendingPoly());
+  }
+  function startPending(path: Pt[], before: string) {
+    const { c, w, h } = shapeBox(path);
+    pending = { kind: tool as ShapeKind, c, w, h, a: 0, before, base: cells.map((x) => x.slice()), baseR: rots.slice(), err: null };
+    applyPending();
+  }
+  /** 確定する。区切れない形のときは知らせて false */
+  function confirmPending(): boolean {
+    if (!pending) return true;
+    if (pending.err) {
+      deps.toast(pending.err);
+      return false;
+    }
+    const b = pending.before;
+    pending = null;
+    guides = { x: [], y: [] };
+    commit(b);
+    syncUI();
+    return true;
+  }
+  function cancelPending() {
+    if (!pending) return;
+    cells = pending.base;
+    rots = pending.baseR;
+    pending = null;
+    guides = { x: [], y: [] };
+    syncUI();
+  }
+  /** ほかの操作に移る前に：区切れる形なら確定、だめなら取り消し */
+  function settlePending() {
+    if (!pending) return;
+    if (pending.err) cancelPending();
+    else confirmPending();
   }
 
   /** 区切りに使う線（0..1）：直線なら始点と終点、曲線なら滑らかにした線 */
@@ -735,9 +974,11 @@ export function initCustomEditor(deps: EditorDeps) {
     if (k < 0) {
       // 図形がマスの中にすっぽり入っているとき：図形の中心を通る横線でマスを上下に分けてから、それぞれを切る
       if (depth > 0) return null;
-      const c = centroid(S);
+      // 図形の角をちょうど通らないよう、中心から少しずらす
+      const sb = bbox(S);
+      const cy = centroid(S).y + (sb.y1 - sb.y0) * 0.07;
       const b = bbox(P);
-      const line = [{ x: b.x0 - 10, y: c.y }, { x: b.x1 + 10, y: c.y }];
+      const line = [{ x: b.x0 - 10, y: cy }, { x: b.x1 + 10, y: cy }];
       const halves = cutPoly(P, line, { ...o, minArea: 0, minThick: 0, onThin: undefined, from: 0, to: pathLen(line) });
       if (halves.length < 2) return null;
       const out: Pt[][] = [];
@@ -764,10 +1005,10 @@ export function initCustomEditor(deps: EditorDeps) {
   }
 
   /** 図形で区切る：囲んだ範囲を1つのマスにし、重なっていたマスからはその部分を取り除く */
-  function carve(path: Pt[]): string | null {
+  function carveShape(shape: Pt[]): string | null {
     const f = frame();
     const unit = Math.min(f.iw, f.ih);
-    const S = clipToFrame(shapeFor(path).map(toPx));
+    const S = clipToFrame(shape);
     if (S.length < 3 || Math.abs(area(S)) < f.iw * f.ih * 0.004) return '図形が小さすぎます';
     const o = { minIn: unit * 0.01, minArea: f.iw * f.ih * 0.004, minThick: unit * 0.035 };
     const out: Pt[][] = [];
@@ -791,9 +1032,12 @@ export function initCustomEditor(deps: EditorDeps) {
 
   type Drag =
     | { kind: 'draw'; pid: number; before: string }
-    | { kind: 'move'; pid: number; before: string; start: Pt; orig: Pt[] }
+    | { kind: 'move'; pid: number; before: string; start: Pt; orig: Pt[]; L: { xs: number[]; ys: number[] } }
     | { kind: 'scale'; pid: number; before: string; start: Pt; loc: Pt[]; c: Pt; a: number; bc: Pt }
-    | { kind: 'rot'; pid: number; before: string; orig: Pt[]; c: Pt; a0: number; s0: number };
+    | { kind: 'rot'; pid: number; before: string; orig: Pt[]; c: Pt; a0: number; s0: number }
+    | { kind: 'pmove'; pid: number; before: string; start: Pt; c0: Pt; L: { xs: number[]; ys: number[] } }
+    | { kind: 'pscale'; pid: number; before: string; w0: number; h0: number; L: { xs: number[]; ys: number[] } }
+    | { kind: 'prot'; pid: number; before: string; a0: number; s0: number };
   let drag: Drag | null = null;
 
   canvas.addEventListener('pointerdown', (e) => {
@@ -803,8 +1047,33 @@ export function initCustomEditor(deps: EditorDeps) {
     } catch {
       /* 合成イベントなど */
     }
-    const p = fromEvent(e);
+    let p = fromEvent(e);
+    if (pending) {
+      const r = canvas.getBoundingClientRect();
+      const sx = e.clientX - r.left, sy = e.clientY - r.top;
+      const hit = (h: Pt, rad = 20) => Math.hypot(sx - h.x, sy - h.y) < rad;
+      const H = pendingHandles();
+      const pp = toPx(p);
+      const pid = e.pointerId, before = '';
+      if (hit(H.ok, 22)) return void confirmPending();
+      if (hit(H.cancel, 18)) return void cancelPending();
+      if (hit(H.rot)) {
+        drag = { kind: 'prot', pid, before, a0: pending.a, s0: Math.atan2(pp.y - pending.c.y, pp.x - pending.c.x) };
+        return draw();
+      }
+      if (hit(H.scale)) {
+        drag = { kind: 'pscale', pid, before, w0: pending.w, h0: pending.h, L: snapLines(pending.base) };
+        return draw();
+      }
+      if (inside(pendingPoly(), pp.x, pp.y)) {
+        drag = { kind: 'pmove', pid, before, start: pp, c0: { ...pending.c }, L: snapLines(pending.base) };
+        return draw();
+      }
+      // 図形の外をさわったら、確定してから次の操作へ
+      settlePending();
+    }
     const before = snapshot();
+    if (tool !== 'select' && tool !== 'knife') p = snapPoint(p, snapLines(cells));
     if (tool === 'select') {
       const r = canvas.getBoundingClientRect();
       if (sel >= 0) {
@@ -829,7 +1098,7 @@ export function initCustomEditor(deps: EditorDeps) {
           sel = i;
           break;
         }
-      if (sel >= 0) drag = { kind: 'move', pid: e.pointerId, before, start: p, orig: cells[sel].map((v) => ({ ...v })) };
+      if (sel >= 0) drag = { kind: 'move', pid: e.pointerId, before, start: p, orig: cells[sel].map((v) => ({ ...v })), L: snapLines(cells, sel) };
       syncUI();
       return;
     }
@@ -839,9 +1108,58 @@ export function initCustomEditor(deps: EditorDeps) {
   });
   canvas.addEventListener('pointermove', (e) => {
     if (!drag || e.pointerId !== drag.pid) return;
-    const p = fromEvent(e);
+    let p = fromEvent(e);
     if (drag.kind === 'draw') {
+      if (tool !== 'knife') p = snapPoint(p, snapLines(cells));
       stroke!.push(p);
+    } else if (drag.kind === 'pmove' && pending) {
+      const pp = toPx(p);
+      const c = { x: drag.c0.x + pp.x - drag.start.x, y: drag.c0.y + pp.y - drag.start.y };
+      pending.c = c;
+      const s = snapBox(bbox(pendingPoly()), drag.L);
+      pending.c = { x: c.x + s.dx, y: c.y + s.dy };
+      applyPending();
+    } else if (drag.kind === 'pscale' && pending) {
+      const pd = pending;
+      const f = frame();
+      const min = Math.min(f.iw, f.ih) * 0.04;
+      const l = rotAround([toPx(p)], pd.c, -pd.a)[0];
+      let w = Math.max(min, Math.abs(l.x - pd.c.x) * 2), h = Math.max(min, Math.abs(l.y - pd.c.y) * 2);
+      if (lockAspect) {
+        const k = Math.max(w / drag.w0, h / drag.h0);
+        w = drag.w0 * k;
+        h = drag.h0 * k;
+      }
+      guides = { x: [], y: [] };
+      // 回していないときは、右下の端を線にそろえる
+      const q = Math.abs(Math.sin(pd.a * 2)) < 1e-6;
+      if (q) {
+        const sx = snap1([pd.c.x + w / 2], drag.L.xs), sy = snap1([pd.c.y + h / 2], drag.L.ys);
+        if (lockAspect) {
+          const s = sx && (!sy || Math.abs(sx.d) <= Math.abs(sy.d)) ? { d: sx.d, line: sx.line, ax: 'x' } : sy ? { d: sy.d, line: sy.line, ax: 'y' } : null;
+          if (s) {
+            const k = s.ax === 'x' ? (w + 2 * s.d) / w : (h + 2 * s.d) / h;
+            w *= k;
+            h *= k;
+            guides = s.ax === 'x' ? { x: [s.line], y: [] } : { x: [], y: [s.line] };
+          }
+        } else {
+          if (sx) w += 2 * sx.d;
+          if (sy) h += 2 * sy.d;
+          guides = { x: sx ? [sx.line] : [], y: sy ? [sy.line] : [] };
+        }
+      }
+      pd.w = Math.max(min, w);
+      pd.h = Math.max(min, h);
+      applyPending();
+    } else if (drag.kind === 'prot' && pending) {
+      const pp = toPx(p);
+      let ang = drag.a0 + Math.atan2(pp.y - pending.c.y, pp.x - pending.c.x) - drag.s0;
+      const step = Math.PI / 12;
+      const sn = Math.round(ang / step) * step;
+      if (Math.abs(ang - sn) < (5 * Math.PI) / 180) ang = sn;
+      pending.a = ang;
+      applyPending();
     } else if (drag.kind === 'move') {
       let dx = p.x - drag.start.x, dy = p.y - drag.start.y;
       // 枠の外へはみ出さないようにする（枠より大きいマスはそのまま）
@@ -849,6 +1167,12 @@ export function initCustomEditor(deps: EditorDeps) {
       const lim = (d: number, lo: number, hi: number) => (hi - lo > 1 ? d : Math.min(1 - hi, Math.max(-lo, d)));
       dx = lim(dx, b.x0, b.x1);
       dy = lim(dy, b.y0, b.y1);
+      // マグネット：端や中心を、枠やほかのマスにそろえる
+      const f = frame();
+      const pb = bbox(drag.orig.map(toPx));
+      const s = snapBox({ x0: pb.x0 + dx * f.iw, x1: pb.x1 + dx * f.iw, y0: pb.y0 + dy * f.ih, y1: pb.y1 + dy * f.ih }, drag.L);
+      dx += s.dx / f.iw;
+      dy += s.dy / f.ih;
       cells[sel] = drag.orig.map((v) => ({ x: v.x + dx, y: v.y + dy }));
     } else if (drag.kind === 'rot') {
       const { c, a0, s0, orig } = drag;
@@ -860,7 +1184,7 @@ export function initCustomEditor(deps: EditorDeps) {
       if (Math.abs(ang - snap) < (4 * Math.PI) / 180) ang = snap;
       cells[sel] = rotAround(orig, c, ang - a0).map(fromPx);
       rots[sel] = ang;
-    } else {
+    } else if (drag.kind === 'scale') {
       // マスの向きにそろえて伸ばす（回したマスもゆがまない）
       const { c, a, bc, start, loc } = drag;
       const pl = rotAround([toPx(p)], c, -a)[0];
@@ -882,6 +1206,15 @@ export function initCustomEditor(deps: EditorDeps) {
     if (!drag || e.pointerId !== drag.pid) return;
     const d = drag;
     drag = null;
+    guides = { x: [], y: [] };
+    if (d.kind === 'pmove' || d.kind === 'pscale' || d.kind === 'prot') return syncUI();
+    if (d.kind === 'draw' && stroke && tool !== 'knife') {
+      // 図形：確定前の調整に入る
+      const path = stroke;
+      stroke = null;
+      if (e.type === 'pointerup') startPending(path, d.before);
+      return syncUI();
+    }
     if (d.kind === 'draw' && stroke) {
       const path = stroke;
       stroke = null;
@@ -890,9 +1223,6 @@ export function initCustomEditor(deps: EditorDeps) {
           const r = knife(path);
           if (r && !r.made && path.length > 2)
             deps.toast(cells.length >= deps.maxCells ? `マスは最大${deps.maxCells}個までです` : r.thin ? '細すぎるマスになるので区切りませんでした。もう少し内側をなぞってください' : '区切るマスがありませんでした');
-        } else {
-          const err = carve(path);
-          if (err) deps.toast(err);
         }
       }
     }
@@ -904,12 +1234,14 @@ export function initCustomEditor(deps: EditorDeps) {
 
   root.querySelectorAll<HTMLButtonElement>('#edTools button').forEach((b) =>
     b.addEventListener('click', () => {
+      settlePending();
       tool = b.dataset.tool as Tool;
       if (tool !== 'select') sel = -1;
       syncUI();
     }),
   );
   const act = (fn: () => void) => () => {
+    settlePending();
     const before = snapshot();
     fn();
     commit(before);
@@ -918,6 +1250,7 @@ export function initCustomEditor(deps: EditorDeps) {
   q('#edUndo').addEventListener('click', undo);
   q('#edRedo').addEventListener('click', redo);
   function undo() {
+    if (pending) return cancelPending();
     const s = past.pop();
     if (s == null) return;
     future.push(snapshot());
@@ -927,6 +1260,7 @@ export function initCustomEditor(deps: EditorDeps) {
     syncUI();
   }
   function redo() {
+    if (pending) return;
     const s = future.pop();
     if (s == null) return;
     past.push(snapshot());
@@ -981,6 +1315,7 @@ export function initCustomEditor(deps: EditorDeps) {
   q<HTMLSelectElement>('#edTpl').addEventListener('change', () => {
     const v = q<HTMLSelectElement>('#edTpl').value;
     if (!v) return;
+    cancelPending();
     const before = snapshot();
     setCells(v === 'blank' ? [[{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }]] : deps.templateCells(v).slice(0, deps.maxCells));
     sel = -1;
@@ -989,10 +1324,12 @@ export function initCustomEditor(deps: EditorDeps) {
     syncUI();
   });
   q('#edClose').addEventListener('click', () => {
-    if (dirty && !confirm('保存せずに閉じますか？')) return;
+    if ((dirty || pending) && !confirm('保存せずに閉じますか？')) return;
+    cancelPending();
     close();
   });
   q('#edSave').addEventListener('click', () => {
+    if (!confirmPending()) return;
     if (!cells.length) return deps.toast('マスがありません。図形を置くか、ひな形を選んでください');
     const name = q<HTMLInputElement>('#edName').value.trim() || 'カスタム';
     const id = editingId ?? Date.now().toString(36);
@@ -1021,7 +1358,13 @@ export function initCustomEditor(deps: EditorDeps) {
     } else if ((e.key === 'Delete' || e.key === 'Backspace') && sel >= 0) {
       e.preventDefault();
       q('#edDel').click();
-    } else if (e.key === 'Escape') q('#edClose').click();
+    } else if (e.key === 'Enter' && pending) {
+      e.preventDefault();
+      confirmPending();
+    } else if (e.key === 'Escape') {
+      if (pending) cancelPending();
+      else q('#edClose').click();
+    }
   });
   new ResizeObserver(() => {
     if (root.hidden) return;
@@ -1043,6 +1386,8 @@ export function initCustomEditor(deps: EditorDeps) {
     future = [];
     sel = -1;
     dirty = false;
+    pending = null;
+    guides = { x: [], y: [] };
     tool = c ? 'select' : 'knife';
     q<HTMLInputElement>('#edName').value = c ? c.name : `カスタム ${new Date().getMonth() + 1}/${new Date().getDate()}`;
     q<HTMLInputElement>('#edSmooth').value = String(smoothness);
@@ -1062,5 +1407,7 @@ export function initCustomEditor(deps: EditorDeps) {
     syncUI();
   }
 
+  // 開発時のテスト用（本番ビルドには含まれない）
+  if (import.meta.env.DEV) (window as unknown as { __ed: unknown }).__ed = { pending: () => pending, handles: () => (pending ? pendingHandles() : null), guides: () => guides };
   return { open, isOpen: () => !root.hidden };
 }
