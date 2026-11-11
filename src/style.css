@@ -865,3 +865,22 @@ body.editing { overflow: hidden; }
 .ed-chip svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 .ed-chip:not(.active) svg path { transform: translate(3px, -1px); }
 @media (max-width: 420px) { .ed-auto button { padding: 0 9px; } .ed-auto span { font-size: 11px; } }
+
+/* 背景色：カスタムカラー（Exif Frame Maker と同じ） */
+.custom-switch { margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--line); font-size: 13px; font-weight: 700; }
+.custom-panel { margin-top: 8px; }
+.custom-panel[hidden] { display: none; }
+.custom-panel .color-editor { margin-top: 10px; }
+.ce-slider { touch-action: pan-y; }
+.ce-slider input.thumb-only { pointer-events: none; }
+.ce-slider input.thumb-only.dragging::-webkit-slider-thumb { transform: scale(1.15); }
+@media (max-width: 900px) {
+  .custom-switch { font-size: 15px; }
+  .ce-slider { font-size: 13px; margin: 12px 0 4px; }
+  .ce-slider input[type=range] { height: 18px; }
+  .ce-slider input[type=range]::-webkit-slider-thumb { width: 28px; height: 28px; }
+  .ce-dropper { font-size: 13px; height: 40px; }
+  #ceHex, .ce-preview { height: 40px; }
+  .ce-preview { width: 40px; }
+  .swatches.history .swatch { width: 34px; height: 34px; }
+}
